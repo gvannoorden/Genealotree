@@ -108,15 +108,15 @@
             padding: 0 10px; position: relative;
         }
         .child-branch::before {
-            content: ''; position: absolute; top: 0; left: 50%; width: 3px;
+            content: ''; position: absolute; top: 0; left: var(--conn-left, 50%); width: 3px;
             height: 24px; background: var(--line-color); border-radius: 2px; transform: translateX(-50%);
         }
         .child-branch::after {
             content: ''; position: absolute; top: 0; height: 3px;
             background: var(--line-color); border-radius: 2px;
         }
-        .child-branch:first-child::after { left: 50%; right: 0; }
-        .child-branch:last-child::after { left: 0; right: 50%; }
+        .child-branch:first-child::after { left: var(--conn-left, 50%); right: 0; }
+        .child-branch:last-child::after { left: 0; right: var(--conn-right, 50%); }
         .child-branch:not(:first-child):not(:last-child)::after { left: 0; right: 0; }
         .child-branch:only-child::after { display: none; }
         .child-unit-wrap { padding-top: 24px; }
