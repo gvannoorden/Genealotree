@@ -88,7 +88,8 @@
         .header-actions { display: flex; gap: 8px; }
 
         /* TREE VIEW */
-        #tree-container { overflow: auto; padding: 40px 20px; min-height: calc(100vh - 57px); }
+        #tree-view { position: relative; }
+        #tree-container { overflow: hidden; cursor: grab; padding: 40px 20px; min-height: calc(100vh - 57px); }
         .tree { display: inline-flex; justify-content: center; min-width: 100%; padding: 20px; }
         .family-unit { display: flex; flex-direction: column; align-items: center; }
         .couple { display: flex; align-items: center; }
@@ -119,6 +120,18 @@
         .child-branch:not(:first-child):not(:last-child)::after { left: 0; right: 0; }
         .child-branch:only-child::after { display: none; }
         .child-unit-wrap { padding-top: 24px; }
+        /* ZOOM CONTROLS */
+        .zoom-controls {
+            position: absolute; top: 12px; right: 12px; z-index: 10;
+            display: flex; flex-direction: column; gap: 4px;
+        }
+        .zoom-controls button {
+            width: 36px; height: 36px; border-radius: 50%; border: 2px solid #eee;
+            background: white; font-size: 1.1rem; cursor: pointer; display: flex;
+            align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            transition: all 0.2s; color: var(--text);
+        }
+        .zoom-controls button:hover { border-color: var(--primary); background: var(--primary-light); }
 
         /* PERSON NODE */
         .person-node {
