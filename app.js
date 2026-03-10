@@ -1,5 +1,5 @@
 // =============================================
-// 🌳 FAMILY TREE APP — Configuration
+// 🌳 GENEALOTREE APP — Configuration
 // =============================================
 const CONFIG = {
     PASSWORD: 'sc0ttmill@r_ext',
@@ -86,6 +86,24 @@ function parseStory(pg) {
 // =============================================
 // DATA LOADING
 // =============================================
+function normalizeRelationships() {
+    const map = new Map(state.members.map(m => [m.id, m]));
+    // If A lists B as parent, make sure B lists A as child
+    for (const m of state.members) {
+        for (const pid of m.parentIds) {
+            const parent = map.get(pid);
+            if (parent && !parent.childrenIds.includes(m.id)) parent.childrenIds.push(m.id);
+        }
+        for (const cid of m.childrenIds) {
+            const child = map.get(cid);
+            if (child && !child.parentIds.includes(m.id)) child.parentIds.push(m.id);
+        }
+        for (const sid of m.spouseIds) {
+            const spouse = map.get(sid);
+            if (spouse && !spouse.spouseIds.includes(m.id)) spouse.spouseIds.push(m.id);
+        }
+    }
+}
 async function loadAll() {
     showLoading(true);
     try {
@@ -97,6 +115,7 @@ async function loadAll() {
         state.members = m.map(parseMember);
         state.events = e.map(parseEvent);
         state.stories = s.map(parseStory);
+        normalizeRelationships();
         render();
         toast('✅ Family data loaded!');
     } catch (err) {
@@ -360,8 +379,35 @@ function showDetail(id) {
         (m.dod ? fmtDate(m.dod) : m.dob ? calcAge(m.dob, m.dod) + ' years' : '—') +
         '</span></div></div></div>';
 
-    // Family section
-    if (spouse || parents.length || children.length) {
+    // Spouse section
+    if (spouse) {
+        html += '<div class="detail-section"><span class="detail-section-title">\ud83d\udc9b Spouse</span>' +
+            '<div class="relation-chips" style="margin-top:8px">';
+        html += '<div class="relation-chip" onclick="showDetail(\'' + spouse.id + '\')">'
+            + '\ud83d\udc9b ' + esc(spouse.name) + '</div>';
+        html += '</div></div>';
+    }
+    // Parents section
+    if (parents.length) {
+        html += '<div class="detail-section"><span class="detail-section-title">\ud83d\udc64 Parents</span>' +
+            '<div class="relation-chips" style="margin-top:8px">';
+        parents.forEach(p => {
+            html += '<div class="relation-chip" onclick="showDetail(\'' + p.id + '\')">'
+                + '\ud83d\udc64 ' + esc(p.name) + '</div>';
+        });
+        html += '</div></div>';
+    }
+    // Children section
+    if (children.length) {
+        html += '<div class="detail-section"><span class="detail-section-title">\ud83d\udc76 Children</span>' +
+            '<div class="relation-chips" style="margin-top:8px">';
+        children.forEach(c => {
+            html += '<div class="relation-chip" onclick="showDetail(\'' + c.id + '\')">'
+                + '\ud83d\udc76 ' + esc(c.name) + '</div>';
+        });
+        html += '</div></div>';
+    }
+    if (false) { /* legacy */
         html += '<div class="detail-section"><span class="detail-section-title">👨‍👩‍👧‍👦 Family</span>' +
             '<div class="relation-chips" style="margin-top:8px">';
         if (spouse) html += '<div class="relation-chip" onclick="showDetail(\'' + spouse.id + '\')">' +
