@@ -216,7 +216,7 @@ function render() {
 }
 
 // =============================================
-// TREE VIEW
+// TREE VIEW — Bridge Person Algorithm
 // =============================================
 function renderTree() {
     const c = document.getElementById('tree-container');
@@ -228,18 +228,44 @@ function renderTree() {
     const map = new Map(state.members.map(m => [m.id, m]));
     const placed = new Set();
 
-    // Find root ancestors (no parents in DB)
+    // Step 1: Find root ancestors (no parents in DB)
     const roots = state.members.filter(m =>
         m.parentIds.length === 0 || m.parentIds.every(p => !map.has(p))
     );
-    const rootIds = new Set(roots.map(r => r.id));
 
-    // Detect co-parent pairs in a group of roots
+    // Step 2: Identify bridge people — someone with parents in DB
+    // whose spouse ALSO has parents in DB (connecting two family lines).
+    // These people get to appear twice: as a leaf in birth family,
+    // and as a full couple with children in their married family.
+    const bridgeIds = new Set();
+    for (const m of state.members) {
+        if (m.parentIds.some(p => map.has(p)) && m.spouseIds.length > 0) {
+            for (const sid of m.spouseIds) {
+                const sp = map.get(sid);
+                if (sp && sp.parentIds.some(p => map.has(p))) {
+                    // Both have parents in DB — they connect two lines
+                    bridgeIds.add(m.id);
+                }
+            }
+        }
+    }
+
+    // Step 3: Detect co-parent pairs among roots
     function detectCoParents(group) {
         const gIds = new Set(group.map(r => r.id));
         const cp = new Map();
         for (const r of group) {
-            if (r.spouseIds.length > 0 || cp.has(r.id)) continue;
+            if (cp.has(r.id)) continue;
+            // Check spouse relation first
+            for (const sid of r.spouseIds) {
+                if (gIds.has(sid) && !cp.has(sid)) {
+                    cp.set(r.id, sid);
+                    cp.set(sid, r.id);
+                    break;
+                }
+            }
+            if (cp.has(r.id)) continue;
+            // Fall back to shared-children detection
             for (const cid of r.childrenIds) {
                 const child = map.get(cid);
                 if (!child) continue;
@@ -250,81 +276,45 @@ function renderTree() {
         return cp;
     }
 
-    // Trace up from a person to find their unplaced root ancestors
-    function findUnplacedRoots(person) {
-        const visited = new Set(), found = [];
-        function trace(pid) {
-            if (visited.has(pid)) return;
-            visited.add(pid);
-            const p = map.get(pid);
-            if (!p) return;
-            if (rootIds.has(pid)) { if (!placed.has(pid)) found.push(p); return; }
-            for (const par of p.parentIds) trace(par);
+    // Step 4: Simple tree builder
+    // bridgeLeafMode: if true, the bridge person renders as a leaf
+    // (no spouse, no children — those appear in the other tree)
+    function buildTree(person, asBridgeLeaf) {
+        if (asBridgeLeaf) {
+            // Render as a leaf card only — clickable but no descendants here
+            return { person: person, spouse: null, children: [], isBridgeLeaf: true };
         }
-        trace(person.id);
-        return found;
-    }
-
-    // Build a branch stopping at stopId (rendered as leaf with no spouse/children)
-    function buildBranch(person, stopId) {
-        if (person.id === stopId) return { person, spouse: null, spouseAncestry: null, children: [] };
         if (placed.has(person.id)) return null;
         placed.add(person.id);
-        let sp = person.spouseIds[0] ? map.get(person.spouseIds[0]) : null;
-        if (sp && placed.has(sp.id)) sp = null;
-        if (sp) placed.add(sp.id);
-        let spAnc = null;
-        if (sp) { const sr = findUnplacedRoots(sp); if (sr.length) spAnc = buildAncestryUnits(sr, sp.id); }
-        const cids = new Set(person.childrenIds);
-        if (sp) sp.childrenIds.forEach(id => cids.add(id));
-        const kids = [...cids].map(id => map.get(id)).filter(Boolean)
-            .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
-            .map(c => buildBranch(c, stopId)).filter(Boolean);
-        return { person, spouse: sp, spouseAncestry: spAnc, children: kids };
-    }
 
-    // Build ancestry units from a set of roots down to a target person
-    function buildAncestryUnits(aRoots, targetId) {
-        const cp = detectCoParents(aRoots);
-        aRoots.sort((a, b) => (a.dob || '').localeCompare(b.dob || ''));
-        const res = [];
-        for (const r of aRoots) {
-            if (placed.has(r.id)) continue;
-            const mateId = cp.get(r.id);
-            const mate = mateId ? map.get(mateId) : null;
-            if (mate && !placed.has(mate.id)) {
-                placed.add(r.id); placed.add(mate.id);
-                const cids = new Set([...r.childrenIds, ...mate.childrenIds]);
-                const kids = [...cids].map(id => map.get(id)).filter(Boolean)
-                    .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
-                    .map(c => buildBranch(c, targetId)).filter(Boolean);
-                if (kids.length) res.push({ person: r, spouse: mate, spouseAncestry: null, children: kids });
-            } else {
-                const u = buildBranch(r, targetId);
-                if (u) res.push(u);
-            }
+        // Find spouse
+        let spouse = null;
+        for (const sid of person.spouseIds) {
+            const s = map.get(sid);
+            if (s && !placed.has(s.id)) { spouse = s; break; }
         }
-        return res.length ? res : null;
-    }
-
-    // Main tree builder with spouse ancestry detection
-    function buildTree(person) {
-        if (placed.has(person.id)) return null;
-        placed.add(person.id);
-        let spouse = person.spouseIds[0] ? map.get(person.spouseIds[0]) : null;
-        if (spouse && placed.has(spouse.id)) spouse = null;
         if (spouse) placed.add(spouse.id);
-        let spAnc = null;
-        if (spouse) { const sr = findUnplacedRoots(spouse); if (sr.length) spAnc = buildAncestryUnits(sr, spouse.id); }
+
+        // Collect children from both
         const cids = new Set(person.childrenIds);
         if (spouse) spouse.childrenIds.forEach(id => cids.add(id));
-        const children = [...cids].map(id => map.get(id)).filter(Boolean)
+
+        const children = [...cids]
+            .map(id => map.get(id)).filter(Boolean)
             .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
-            .map(c => buildTree(c)).filter(Boolean);
-        return { person, spouse, spouseAncestry: spAnc, children };
+            .map(child => {
+                // If this child is a bridge person and is already placed,
+                // render them as a bridge leaf in this tree
+                if (bridgeIds.has(child.id) && placed.has(child.id)) {
+                    return buildTree(child, true);
+                }
+                return buildTree(child, false);
+            }).filter(Boolean);
+
+        return { person: person, spouse: spouse, children: children, isBridgeLeaf: false };
     }
 
-    // Process root groups
+    // Step 5: Build all root family units
     const coParentOf = detectCoParents(roots);
     const units = [];
     roots.sort((a, b) => (a.dob || '').localeCompare(b.dob || ''));
@@ -333,19 +323,28 @@ function renderTree() {
         const mateId = coParentOf.get(r.id);
         const mate = mateId ? map.get(mateId) : null;
         if (mate && !placed.has(mate.id)) {
-            placed.add(r.id); placed.add(mate.id);
+            placed.add(r.id);
+            placed.add(mate.id);
             const cids = new Set([...r.childrenIds, ...mate.childrenIds]);
-            const children = [...cids].map(id => map.get(id)).filter(Boolean)
+            const children = [...cids]
+                .map(id => map.get(id)).filter(Boolean)
                 .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
-                .map(c => buildTree(c)).filter(Boolean);
-            if (children.length) units.push({ person: r, spouse: mate, spouseAncestry: null, children });
+                .map(child => {
+                    if (bridgeIds.has(child.id) && placed.has(child.id)) {
+                        return buildTree(child, true);
+                    }
+                    return buildTree(child, false);
+                }).filter(Boolean);
+            if (children.length) {
+                units.push({ person: r, spouse: mate, children: children, isBridgeLeaf: false });
+            }
         } else {
-            const u = buildTree(r);
+            const u = buildTree(r, false);
             if (u) units.push(u);
         }
     }
 
-    // Zoom controls
+    // Step 6: Render
     const zc = document.createElement('div');
     zc.className = 'zoom-controls';
     zc.innerHTML = '<button onclick="treeZoom(0.15)">＋</button><button onclick="treeZoom(-0.15)">－</button><button onclick="treeZoomReset()">⟳</button>';
@@ -374,25 +373,20 @@ function renderTree() {
     });
 }
 
+// =============================================
+// TREE DOM BUILDERS
+// =============================================
 function unitEl(unit) {
     const el = document.createElement('div');
     el.className = 'family-unit';
     const couple = document.createElement('div');
     couple.className = 'couple';
-    if (unit.spouseAncestry) couple.classList.add('couple-merged');
-    couple.appendChild(nodeEl(unit.person));
+    couple.appendChild(nodeEl(unit.person, unit.isBridgeLeaf));
     if (unit.spouse) {
         const line = document.createElement('div');
         line.className = 'spouse-line';
         couple.appendChild(line);
-        if (unit.spouseAncestry) {
-            const ancestry = document.createElement('div');
-            ancestry.className = 'spouse-ancestry';
-            unit.spouseAncestry.forEach(u => ancestry.appendChild(unitEl(u)));
-            couple.appendChild(ancestry);
-        } else {
-            couple.appendChild(nodeEl(unit.spouse));
-        }
+        couple.appendChild(nodeEl(unit.spouse, false));
     }
     el.appendChild(couple);
     if (unit.children.length) {
@@ -415,16 +409,17 @@ function unitEl(unit) {
     return el;
 }
 
-function nodeEl(m) {
+function nodeEl(m, isBridgeLeaf) {
     const n = document.createElement('div');
-    n.className = 'person-node' + (m.dod ? ' deceased' : '');
+    n.className = 'person-node' + (m.dod ? ' deceased' : '') + (isBridgeLeaf ? ' bridge-leaf' : '');
     n.onclick = e => { e.stopPropagation(); showDetail(m.id); };
     const by = getYear(m.dob), dy = getYear(m.dod);
     n.innerHTML =
         (m.dod ? '<div class="deceased-badge">🕊️</div>' : '') +
         '<div class="node-photo">' + photoEl(m.photo) + '</div>' +
         '<div class="node-name">' + esc(m.name) + '</div>' +
-        '<div class="node-dates">' + (dy ? by + ' — ' + dy : by ? 'b. ' + by : '') + '</div>';
+        '<div class="node-dates">' + (dy ? by + ' — ' + dy : by ? 'b. ' + by : '') + '</div>' +
+        (isBridgeLeaf ? '<div class="bridge-badge">💛 see spouse tree</div>' : '');
     return n;
 }
 
