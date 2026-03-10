@@ -3,7 +3,7 @@
 // =============================================
 const CONFIG = {
     PASSWORD: 'sc0ttmill@r_ext',
-    PROXY_URL: 'https://silent-lab-14d9.scottmillergavin.workers.dev', // Your Cloudflare Worker URL (API key is stored securely in Worker secrets)
+    PROXY_URL: 'https://silent-lab-14d9.scottmillergavin.workers.dev',
     FAMILY_DB_ID: '107331c45b344f0e990ef7e7ec469f12',
     EVENTS_DB_ID: '551340f36d55480e86469feccbad14d4',
     STORIES_DB_ID: '21102098d4904caf99a29a691b38e02f',
@@ -21,10 +21,7 @@ let state = { members: [], events: [], stories: [], currentView: 'tree', selecte
 // NOTION API
 // =============================================
 async function apiFetch(endpoint, method = 'POST', body = null) {
-    const opts = {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-    };
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
     if (body && method !== 'GET') opts.body = JSON.stringify(body);
     const base = CONFIG.PROXY_URL.replace(/\/+$/, '');
     const res = await fetch(base + endpoint, opts);
@@ -88,7 +85,6 @@ function parseStory(pg) {
 // =============================================
 function normalizeRelationships() {
     const map = new Map(state.members.map(m => [m.id, m]));
-    // If A lists B as parent, make sure B lists A as child
     for (const m of state.members) {
         for (const pid of m.parentIds) {
             const parent = map.get(pid);
@@ -236,33 +232,100 @@ function renderTree() {
     const roots = state.members.filter(m =>
         m.parentIds.length === 0 || m.parentIds.every(p => !map.has(p))
     );
-
     const rootIds = new Set(roots.map(r => r.id));
+
+    // Detect co-parent pairs in a group of roots
+    function detectCoParents(group) {
+        const gIds = new Set(group.map(r => r.id));
+        const cp = new Map();
+        for (const r of group) {
+            if (r.spouseIds.length > 0 || cp.has(r.id)) continue;
+            for (const cid of r.childrenIds) {
+                const child = map.get(cid);
+                if (!child) continue;
+                const mate = child.parentIds.find(pid => pid !== r.id && gIds.has(pid) && !cp.has(pid));
+                if (mate) { cp.set(r.id, mate); cp.set(mate, r.id); break; }
+            }
+        }
+        return cp;
+    }
+
+    // Trace up from a person to find their unplaced root ancestors
+    function findUnplacedRoots(person) {
+        const visited = new Set(), found = [];
+        function trace(pid) {
+            if (visited.has(pid)) return;
+            visited.add(pid);
+            const p = map.get(pid);
+            if (!p) return;
+            if (rootIds.has(pid)) { if (!placed.has(pid)) found.push(p); return; }
+            for (const par of p.parentIds) trace(par);
+        }
+        trace(person.id);
+        return found;
+    }
+
+    // Build a branch stopping at stopId (rendered as leaf with no spouse/children)
+    function buildBranch(person, stopId) {
+        if (person.id === stopId) return { person, spouse: null, spouseAncestry: null, children: [] };
+        if (placed.has(person.id)) return null;
+        placed.add(person.id);
+        let sp = person.spouseIds[0] ? map.get(person.spouseIds[0]) : null;
+        if (sp && placed.has(sp.id)) sp = null;
+        if (sp) placed.add(sp.id);
+        let spAnc = null;
+        if (sp) { const sr = findUnplacedRoots(sp); if (sr.length) spAnc = buildAncestryUnits(sr, sp.id); }
+        const cids = new Set(person.childrenIds);
+        if (sp) sp.childrenIds.forEach(id => cids.add(id));
+        const kids = [...cids].map(id => map.get(id)).filter(Boolean)
+            .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
+            .map(c => buildBranch(c, stopId)).filter(Boolean);
+        return { person, spouse: sp, spouseAncestry: spAnc, children: kids };
+    }
+
+    // Build ancestry units from a set of roots down to a target person
+    function buildAncestryUnits(aRoots, targetId) {
+        const cp = detectCoParents(aRoots);
+        aRoots.sort((a, b) => (a.dob || '').localeCompare(b.dob || ''));
+        const res = [];
+        for (const r of aRoots) {
+            if (placed.has(r.id)) continue;
+            const mateId = cp.get(r.id);
+            const mate = mateId ? map.get(mateId) : null;
+            if (mate && !placed.has(mate.id)) {
+                placed.add(r.id); placed.add(mate.id);
+                const cids = new Set([...r.childrenIds, ...mate.childrenIds]);
+                const kids = [...cids].map(id => map.get(id)).filter(Boolean)
+                    .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
+                    .map(c => buildBranch(c, targetId)).filter(Boolean);
+                if (kids.length) res.push({ person: r, spouse: mate, spouseAncestry: null, children: kids });
+            } else {
+                const u = buildBranch(r, targetId);
+                if (u) res.push(u);
+            }
+        }
+        return res.length ? res : null;
+    }
+
+    // Main tree builder with spouse ancestry detection
     function buildTree(person) {
         if (placed.has(person.id)) return null;
         placed.add(person.id);
         let spouse = person.spouseIds[0] ? map.get(person.spouseIds[0]) : null;
         if (spouse && placed.has(spouse.id)) spouse = null;
         if (spouse) placed.add(spouse.id);
+        let spAnc = null;
+        if (spouse) { const sr = findUnplacedRoots(spouse); if (sr.length) spAnc = buildAncestryUnits(sr, spouse.id); }
         const cids = new Set(person.childrenIds);
         if (spouse) spouse.childrenIds.forEach(id => cids.add(id));
         const children = [...cids].map(id => map.get(id)).filter(Boolean)
             .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
             .map(c => buildTree(c)).filter(Boolean);
-        return { person, spouse, children };
+        return { person, spouse, spouseAncestry: spAnc, children };
     }
 
-    // Detect co-parent pairs among roots (share a child but no spouse relation)
-    const coParentOf = new Map();
-    for (const r of roots) {
-        if (r.spouseIds.length > 0 || coParentOf.has(r.id)) continue;
-        for (const cid of r.childrenIds) {
-            const child = map.get(cid);
-            if (!child) continue;
-            const mate = child.parentIds.find(pid => pid !== r.id && rootIds.has(pid) && !coParentOf.has(pid));
-            if (mate) { coParentOf.set(r.id, mate); coParentOf.set(mate, r.id); break; }
-        }
-    }
+    // Process root groups
+    const coParentOf = detectCoParents(roots);
     const units = [];
     roots.sort((a, b) => (a.dob || '').localeCompare(b.dob || ''));
     for (const r of roots) {
@@ -275,7 +338,7 @@ function renderTree() {
             const children = [...cids].map(id => map.get(id)).filter(Boolean)
                 .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
                 .map(c => buildTree(c)).filter(Boolean);
-            if (children.length) units.push({ person: r, spouse: mate, children });
+            if (children.length) units.push({ person: r, spouse: mate, spouseAncestry: null, children });
         } else {
             const u = buildTree(r);
             if (u) units.push(u);
@@ -296,7 +359,6 @@ function renderTree() {
     inner.appendChild(tree);
     c.appendChild(inner);
     initZoomPan(c, inner);
-    // Adjust connector lines to point at the primary person, not couple center
     requestAnimationFrame(function() {
         c.querySelectorAll('.child-branch').forEach(function(br) {
             var fu = br.querySelector(':scope > .child-unit-wrap > .family-unit');
@@ -315,20 +377,24 @@ function renderTree() {
 function unitEl(unit) {
     const el = document.createElement('div');
     el.className = 'family-unit';
-
-    // Couple row
     const couple = document.createElement('div');
     couple.className = 'couple';
+    if (unit.spouseAncestry) couple.classList.add('couple-merged');
     couple.appendChild(nodeEl(unit.person));
     if (unit.spouse) {
         const line = document.createElement('div');
         line.className = 'spouse-line';
         couple.appendChild(line);
-        couple.appendChild(nodeEl(unit.spouse));
+        if (unit.spouseAncestry) {
+            const ancestry = document.createElement('div');
+            ancestry.className = 'spouse-ancestry';
+            unit.spouseAncestry.forEach(u => ancestry.appendChild(unitEl(u)));
+            couple.appendChild(ancestry);
+        } else {
+            couple.appendChild(nodeEl(unit.spouse));
+        }
     }
     el.appendChild(couple);
-
-    // Children
     if (unit.children.length) {
         const vl = document.createElement('div');
         vl.className = 'vert-line';
@@ -371,14 +437,12 @@ function initZoomPan(container, inner) {
         inner.style.transform = 'translate(' + zoomState.panX + 'px,' + zoomState.panY + 'px) scale(' + zoomState.scale + ')';
     }
     applyTransform();
-    // Mouse wheel zoom
     container.addEventListener('wheel', function(e) {
         e.preventDefault();
         const delta = e.deltaY > 0 ? -0.08 : 0.08;
         zoomState.scale = Math.min(2, Math.max(0.2, zoomState.scale + delta));
         applyTransform();
     }, { passive: false });
-    // Mouse drag pan
     container.addEventListener('mousedown', function(e) {
         if (e.target.closest('.person-node') || e.target.closest('.zoom-controls')) return;
         zoomState.dragging = true;
@@ -396,7 +460,6 @@ function initZoomPan(container, inner) {
         zoomState.dragging = false;
         container.style.cursor = 'grab';
     });
-    // Touch pinch zoom + drag
     let lastTouchDist = 0, lastTouchMid = null;
     container.addEventListener('touchstart', function(e) {
         if (e.touches.length === 2) {
@@ -434,6 +497,7 @@ function treeZoomReset() {
     const inner = document.getElementById('tree-inner');
     if (inner) inner.style.transform = 'translate(0px,0px) scale(0.85)';
 }
+
 // =============================================
 // LIST VIEW
 // =============================================
@@ -478,7 +542,6 @@ function showDetail(id) {
     const children = m.childrenIds.map(i => map.get(i)).filter(Boolean);
     const by = getYear(m.dob), dy = getYear(m.dod);
     const dateStr = dy ? by + ' — ' + dy + ' 🕊️' : m.dob ? 'Born ' + fmtDate(m.dob) : '';
-
     const panel = document.getElementById('detail-panel');
     let html = '<div class="detail-header">' +
         '<button class="detail-close" onclick="closeDetail()">✕</button>' +
@@ -486,8 +549,6 @@ function showDetail(id) {
         '<div class="detail-name">' + esc(m.name) + (m.middleName ? ' ' + esc(m.middleName) : '') + '</div>' +
         '<div class="detail-dates">' + dateStr + '</div></div>' +
         '<div class="detail-body">';
-
-    // Details section
     html += '<div class="detail-section"><div class="detail-section-header">' +
         '<span class="detail-section-title">📋 Details</span>' +
         '<button class="btn btn-sm btn-outline" onclick="showEditModal(\'' + id + '\')">' +
@@ -497,55 +558,35 @@ function showDetail(id) {
         '<div class="info-item"><label>' + (m.dod ? '🕊️ Died' : '🎂 Age') + '</label><span>' +
         (m.dod ? fmtDate(m.dod) : m.dob ? calcAge(m.dob, m.dod) + ' years' : '—') +
         '</span></div></div></div>';
-
-    // Spouse section
     if (spouse) {
-        html += '<div class="detail-section"><span class="detail-section-title">\ud83d\udc9b Spouse</span>' +
+        html += '<div class="detail-section"><span class="detail-section-title">💛 Spouse</span>' +
             '<div class="relation-chips" style="margin-top:8px">';
-        html += '<div class="relation-chip" onclick="showDetail(\'' + spouse.id + '\')">'
-            + '\ud83d\udc9b ' + esc(spouse.name) + '</div>';
-        html += '</div></div>';
-    }
-    // Parents section
-    if (parents.length) {
-        html += '<div class="detail-section"><span class="detail-section-title">\ud83d\udc64 Parents</span>' +
-            '<div class="relation-chips" style="margin-top:8px">';
-        parents.forEach(p => {
-            html += '<div class="relation-chip" onclick="showDetail(\'' + p.id + '\')">'
-                + '\ud83d\udc64 ' + esc(p.name) + '</div>';
-        });
-        html += '</div></div>';
-    }
-    // Children section
-    if (children.length) {
-        html += '<div class="detail-section"><span class="detail-section-title">\ud83d\udc76 Children</span>' +
-            '<div class="relation-chips" style="margin-top:8px">';
-        children.forEach(c => {
-            html += '<div class="relation-chip" onclick="showDetail(\'' + c.id + '\')">'
-                + '\ud83d\udc76 ' + esc(c.name) + '</div>';
-        });
-        html += '</div></div>';
-    }
-    if (false) { /* legacy */
-        html += '<div class="detail-section"><span class="detail-section-title">👨‍👩‍👧‍👦 Family</span>' +
-            '<div class="relation-chips" style="margin-top:8px">';
-        if (spouse) html += '<div class="relation-chip" onclick="showDetail(\'' + spouse.id + '\')">' +
+        html += '<div class="relation-chip" onclick="showDetail(\'' + spouse.id + '\')">' +
             '💛 ' + esc(spouse.name) + '</div>';
+        html += '</div></div>';
+    }
+    if (parents.length) {
+        html += '<div class="detail-section"><span class="detail-section-title">👤 Parents</span>' +
+            '<div class="relation-chips" style="margin-top:8px">';
         parents.forEach(p => {
             html += '<div class="relation-chip" onclick="showDetail(\'' + p.id + '\')">' +
                 '👤 ' + esc(p.name) + '</div>';
         });
+        html += '</div></div>';
+    }
+    if (children.length) {
+        html += '<div class="detail-section"><span class="detail-section-title">👶 Children</span>' +
+            '<div class="relation-chips" style="margin-top:8px">';
         children.forEach(c => {
             html += '<div class="relation-chip" onclick="showDetail(\'' + c.id + '\')">' +
                 '👶 ' + esc(c.name) + '</div>';
         });
         html += '</div></div>';
     }
-
-    // Events section
     html += '<div class="detail-section"><div class="detail-section-header">' +
         '<span class="detail-section-title">📅 Events (' + ev.length + ')</span>' +
-        '<button class="btn btn-sm btn-outline" onclick="showAddEventModal(\'' + id + '\')">➕</button></div>';
+        '<button class="btn btn-sm btn-outline" onclick="showAddEventModal(\'' + id + '\')">' +
+        '➕</button></div>';
     if (ev.length) {
         ev.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
         ev.forEach(e => {
@@ -557,11 +598,10 @@ function showDetail(id) {
         });
     } else html += '<p style="color:var(--text-light);font-size:0.88rem">No events yet</p>';
     html += '</div>';
-
-    // Stories section
     html += '<div class="detail-section"><div class="detail-section-header">' +
         '<span class="detail-section-title">📖 Stories (' + st.length + ')</span>' +
-        '<button class="btn btn-sm btn-outline" onclick="showAddStoryModal(\'' + id + '\')">➕</button></div>';
+        '<button class="btn btn-sm btn-outline" onclick="showAddStoryModal(\'' + id + '\')">' +
+        '➕</button></div>';
     if (st.length) {
         st.forEach(s => {
             html += '<div class="story-card" onclick="toggleStory(\'' + s.id + '\')">' +
@@ -574,7 +614,6 @@ function showDetail(id) {
         });
     } else html += '<p style="color:var(--text-light);font-size:0.88rem">No stories yet</p>';
     html += '</div></div>';
-
     panel.innerHTML = html;
     panel.classList.add('open');
     document.getElementById('panel-overlay').classList.add('open');
@@ -673,9 +712,9 @@ function showEditModal(id) {
         fg('👤 Parent 2', '<select id="em-p2"><option value="">— None —</option>' + opts + '</select>') +
         '<div class="form-actions">' +
         '<button class="btn btn-outline" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn" onclick="submitEdit(\'' + id + '\')">💾 Save</button></div>'
+        '<button class="btn" onclick="submitEdit(\'' + id + '\')">' +
+        '💾 Save</button></div>'
     );
-    // Pre-select current values
     if (m.spouseIds[0]) document.getElementById('em-spouse').value = m.spouseIds[0];
     if (m.parentIds[0]) document.getElementById('em-p1').value = m.parentIds[0];
     if (m.parentIds[1]) document.getElementById('em-p2').value = m.parentIds[1];
@@ -721,7 +760,8 @@ function showAddEventModal(memberId) {
         fg('📅 Date', '<input type="date" id="ev-date">') +
         '<div class="form-actions">' +
         '<button class="btn btn-outline" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn" onclick="submitEvent(\'' + memberId + '\')">📅 Add</button></div>'
+        '<button class="btn" onclick="submitEvent(\'' + memberId + '\')">' +
+        '📅 Add</button></div>'
     );
 }
 
@@ -760,7 +800,8 @@ function showAddStoryModal(memberId) {
         fg('📖 Story', '<textarea id="st-text" rows="5" placeholder="Tell the story..."></textarea>') +
         '<div class="form-actions">' +
         '<button class="btn btn-outline" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn" onclick="submitStory(\'' + memberId + '\')">📖 Add</button></div>'
+        '<button class="btn" onclick="submitStory(\'' + memberId + '\')">' +
+        '📖 Add</button></div>'
     );
 }
 
