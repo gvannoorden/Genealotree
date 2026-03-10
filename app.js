@@ -161,6 +161,11 @@ function esc(s) {
     return (s || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
+function memberSort(a, b) {
+    return (a.dob || '9999-12-31').localeCompare(b.dob || '9999-12-31') ||
+        (a.name || '').localeCompare(b.name || '');
+}
+
 // =============================================
 // AUTH
 // =============================================
@@ -216,8 +221,285 @@ function render() {
 }
 
 // =============================================
-// TREE VIEW — Bridge Person Algorithm
+// TREE VIEW — Layered Generations
 // =============================================
+function buildGenerationLayout() {
+    const members = [...state.members];
+    const memberMap = new Map(members.map(m => [m.id, m]));
+    const parentOf = new Map();
+
+    members.forEach(m => {
+        parentOf.set(m.id, m.parentIds.filter(pid => memberMap.has(pid)));
+    });
+
+    const uf = {};
+    members.forEach(m => { uf[m.id] = m.id; });
+
+    const find = id => uf[id] === id ? id : (uf[id] = find(uf[id]));
+    const union = (a, b) => {
+        const ra = find(a);
+        const rb = find(b);
+        if (ra !== rb) uf[rb] = ra;
+    };
+
+    members.forEach(m => {
+        m.spouseIds.filter(sid => memberMap.has(sid)).forEach(sid => union(m.id, sid));
+    });
+
+    const groups = new Map();
+    const memberToGroupId = new Map();
+
+    members.forEach(m => {
+        const groupId = find(m.id);
+        memberToGroupId.set(m.id, groupId);
+        if (!groups.has(groupId)) {
+            groups.set(groupId, {
+                id: groupId,
+                members: [],
+                parentGroupIds: new Set(),
+                childGroupIds: new Set(),
+                depth: 0,
+                sortKey: '',
+            });
+        }
+        groups.get(groupId).members.push(m);
+    });
+
+    groups.forEach(group => {
+        group.members.sort(memberSort);
+        group.sortKey = group.members
+            .map(m => (m.dob || '9999-12-31') + '|' + m.name)
+            .join('||');
+    });
+
+    members.forEach(child => {
+        const childGroupId = memberToGroupId.get(child.id);
+        parentOf.get(child.id).forEach(parentId => {
+            const parentGroupId = memberToGroupId.get(parentId);
+            if (!parentGroupId || parentGroupId === childGroupId) return;
+            groups.get(parentGroupId).childGroupIds.add(childGroupId);
+            groups.get(childGroupId).parentGroupIds.add(parentGroupId);
+        });
+    });
+
+    const depthMemo = new Map();
+    function depthOf(groupId, stack = new Set()) {
+        if (depthMemo.has(groupId)) return depthMemo.get(groupId);
+        if (stack.has(groupId)) return 0;
+        stack.add(groupId);
+        let depth = 0;
+        groups.get(groupId).parentGroupIds.forEach(parentGroupId => {
+            depth = Math.max(depth, depthOf(parentGroupId, stack) + 1);
+        });
+        stack.delete(groupId);
+        depthMemo.set(groupId, depth);
+        return depth;
+    }
+
+    groups.forEach(group => {
+        group.depth = depthOf(group.id);
+    });
+
+    const rowsMap = new Map();
+    [...groups.values()].forEach(group => {
+        if (!rowsMap.has(group.depth)) rowsMap.set(group.depth, []);
+        rowsMap.get(group.depth).push(group);
+    });
+
+    const unitById = new Map();
+    const groupToUnitId = new Map();
+    const rows = [];
+
+    function sharedChildCount(a, b) {
+        let count = 0;
+        a.childGroupIds.forEach(childGroupId => {
+            if (b.childGroupIds.has(childGroupId)) count++;
+        });
+        return count;
+    }
+
+    [...rowsMap.keys()].sort((a, b) => a - b).forEach(depth => {
+        const layerGroups = rowsMap.get(depth)
+            .slice()
+            .sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+        const remaining = new Set(layerGroups.map(group => group.id));
+        const row = { depth, units: [] };
+
+        while (remaining.size) {
+            const group = layerGroups.find(candidate => remaining.has(candidate.id));
+            remaining.delete(group.id);
+
+            const sourceGroups = [group];
+            if (group.members.length === 1) {
+                let bestMatch = null;
+                let bestScore = 0;
+                layerGroups.forEach(other => {
+                    if (!remaining.has(other.id) || other.members.length !== 1) return;
+                    const score = sharedChildCount(group, other);
+                    if (score > bestScore || (score === bestScore && score > 0 && other.sortKey < (bestMatch?.sortKey || ''))) {
+                        bestScore = score;
+                        bestMatch = other;
+                    }
+                });
+                if (bestMatch && bestScore > 0) {
+                    remaining.delete(bestMatch.id);
+                    sourceGroups.push(bestMatch);
+                }
+            }
+
+            const membersInUnit = sourceGroups
+                .flatMap(sourceGroup => sourceGroup.members)
+                .sort(memberSort);
+
+            const unit = {
+                id: 'unit-' + depth + '-' + row.units.length + '-' + membersInUnit.map(m => m.id.slice(0, 4)).join(''),
+                depth: depth,
+                sourceGroupIds: sourceGroups.map(sourceGroup => sourceGroup.id),
+                members: membersInUnit,
+                parentUnitIds: new Set(),
+                childUnitIds: new Set(),
+                sortKey: membersInUnit
+                    .map(m => (m.dob || '9999-12-31') + '|' + m.name)
+                    .join('||'),
+            };
+
+            row.units.push(unit);
+            unitById.set(unit.id, unit);
+            sourceGroups.forEach(sourceGroup => groupToUnitId.set(sourceGroup.id, unit.id));
+        }
+
+        rows.push(row);
+    });
+
+    groups.forEach(group => {
+        const parentUnitId = groupToUnitId.get(group.id);
+        group.childGroupIds.forEach(childGroupId => {
+            const childUnitId = groupToUnitId.get(childGroupId);
+            if (!parentUnitId || !childUnitId || parentUnitId === childUnitId) return;
+            unitById.get(parentUnitId).childUnitIds.add(childUnitId);
+            unitById.get(childUnitId).parentUnitIds.add(parentUnitId);
+        });
+    });
+
+    const positionByUnitId = new Map();
+    function refreshPositions() {
+        rows.forEach(row => {
+            row.units.forEach((unit, index) => positionByUnitId.set(unit.id, index));
+        });
+    }
+
+    function averagePosition(ids) {
+        const values = [...ids]
+            .filter(id => positionByUnitId.has(id))
+            .map(id => positionByUnitId.get(id));
+        if (!values.length) return null;
+        return values.reduce((sum, value) => sum + value, 0) / values.length;
+    }
+
+    rows.forEach(row => row.units.sort((a, b) => a.sortKey.localeCompare(b.sortKey)));
+    refreshPositions();
+
+    for (let i = 1; i < rows.length; i++) {
+        rows[i].units.sort((a, b) => {
+            const aAnchor = averagePosition(a.parentUnitIds);
+            const bAnchor = averagePosition(b.parentUnitIds);
+            if (aAnchor != null && bAnchor != null && aAnchor !== bAnchor) return aAnchor - bAnchor;
+            if (aAnchor != null && bAnchor == null) return -1;
+            if (aAnchor == null && bAnchor != null) return 1;
+            return a.sortKey.localeCompare(b.sortKey);
+        });
+        refreshPositions();
+    }
+
+    for (let i = rows.length - 2; i >= 0; i--) {
+        rows[i].units.sort((a, b) => {
+            const aAnchor = averagePosition(a.childUnitIds);
+            const bAnchor = averagePosition(b.childUnitIds);
+            if (aAnchor != null && bAnchor != null && aAnchor !== bAnchor) return aAnchor - bAnchor;
+            if (aAnchor != null && bAnchor == null) return -1;
+            if (aAnchor == null && bAnchor != null) return 1;
+            return a.sortKey.localeCompare(b.sortKey);
+        });
+        refreshPositions();
+    }
+
+    const edges = [];
+    rows.forEach(row => {
+        row.units.forEach(unit => {
+            unit.childUnitIds.forEach(childUnitId => {
+                edges.push({ parentUnitId: unit.id, childUnitId: childUnitId });
+            });
+        });
+    });
+
+    return { rows: rows, units: rows.flatMap(row => row.units), edges: edges };
+}
+
+function generationUnitEl(unit) {
+    const el = document.createElement('div');
+    el.className = 'generation-unit';
+    el.dataset.unitId = unit.id;
+
+    const couple = document.createElement('div');
+    couple.className = 'generation-couple';
+
+    unit.members.forEach((member, index) => {
+        if (index > 0) {
+            const line = document.createElement('div');
+            line.className = 'spouse-line';
+            couple.appendChild(line);
+        }
+        couple.appendChild(nodeEl(member, false));
+    });
+
+    el.appendChild(couple);
+    return el;
+}
+
+function drawLayeredConnectors(treeEl, layout) {
+    const svg = treeEl.querySelector('.tree-lines');
+    if (!svg) return;
+
+    const ns = 'http://www.w3.org/2000/svg';
+    svg.innerHTML = '';
+
+    const treeRect = treeEl.getBoundingClientRect();
+    const width = Math.ceil(treeEl.scrollWidth || treeEl.getBoundingClientRect().width);
+    const height = Math.ceil(treeEl.scrollHeight || treeEl.getBoundingClientRect().height);
+
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('width', width);
+    svg.setAttribute('height', height);
+
+    const anchors = new Map();
+    layout.units.forEach(unit => {
+        const unitNode = treeEl.querySelector('[data-unit-id="' + unit.id + '"]');
+        if (!unitNode) return;
+        const rect = unitNode.getBoundingClientRect();
+        anchors.set(unit.id, {
+            x: rect.left + rect.width / 2 - treeRect.left,
+            top: rect.top - treeRect.top,
+            bottom: rect.bottom - treeRect.top,
+        });
+    });
+
+    layout.edges.forEach(edge => {
+        const parent = anchors.get(edge.parentUnitId);
+        const child = anchors.get(edge.childUnitId);
+        if (!parent || !child) return;
+
+        const midY = parent.bottom + (child.top - parent.bottom) / 2;
+        const path = document.createElementNS(ns, 'path');
+        path.setAttribute('d', 'M ' + parent.x + ' ' + parent.bottom + ' V ' + midY + ' H ' + child.x + ' V ' + child.top);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', 'var(--line-color)');
+        path.setAttribute('stroke-width', '3');
+        path.setAttribute('stroke-linecap', 'round');
+        path.setAttribute('stroke-linejoin', 'round');
+        svg.appendChild(path);
+    });
+}
+
 function renderTree() {
     const c = document.getElementById('tree-container');
     c.innerHTML = '';
@@ -225,190 +507,44 @@ function renderTree() {
         c.innerHTML = '<div class="empty-state">🌱 No family members yet!<br>Click <b>➕ Add Member</b> to get started.</div>';
         return;
     }
-    const map = new Map(state.members.map(m => [m.id, m]));
-    const placed = new Set();
 
-    // Step 1: Find root ancestors (no parents in DB)
-    const roots = state.members.filter(m =>
-        m.parentIds.length === 0 || m.parentIds.every(p => !map.has(p))
-    );
+    const layout = buildGenerationLayout();
 
-    // Step 2: Identify bridge people — someone with parents in DB
-    // whose spouse ALSO has parents in DB (connecting two family lines).
-    // These people get to appear twice: as a leaf in birth family,
-    // and as a full couple with children in their married family.
-    const bridgeIds = new Set();
-    for (const m of state.members) {
-        if (m.parentIds.some(p => map.has(p)) && m.spouseIds.length > 0) {
-            for (const sid of m.spouseIds) {
-                const sp = map.get(sid);
-                if (sp && sp.parentIds.some(p => map.has(p))) {
-                    // Both have parents in DB — they connect two lines
-                    bridgeIds.add(m.id);
-                }
-            }
-        }
-    }
-
-    // Step 3: Detect co-parent pairs among roots
-    function detectCoParents(group) {
-        const gIds = new Set(group.map(r => r.id));
-        const cp = new Map();
-        for (const r of group) {
-            if (cp.has(r.id)) continue;
-            // Check spouse relation first
-            for (const sid of r.spouseIds) {
-                if (gIds.has(sid) && !cp.has(sid)) {
-                    cp.set(r.id, sid);
-                    cp.set(sid, r.id);
-                    break;
-                }
-            }
-            if (cp.has(r.id)) continue;
-            // Fall back to shared-children detection
-            for (const cid of r.childrenIds) {
-                const child = map.get(cid);
-                if (!child) continue;
-                const mate = child.parentIds.find(pid => pid !== r.id && gIds.has(pid) && !cp.has(pid));
-                if (mate) { cp.set(r.id, mate); cp.set(mate, r.id); break; }
-            }
-        }
-        return cp;
-    }
-
-    // Step 4: Simple tree builder
-    // bridgeLeafMode: if true, the bridge person renders as a leaf
-    // (no spouse, no children — those appear in the other tree)
-    function buildTree(person, asBridgeLeaf) {
-        if (asBridgeLeaf) {
-            // Render as a leaf card only — clickable but no descendants here
-            return { person: person, spouse: null, children: [], isBridgeLeaf: true };
-        }
-        if (placed.has(person.id)) return null;
-        placed.add(person.id);
-
-        // Find spouse
-        let spouse = null;
-        for (const sid of person.spouseIds) {
-            const s = map.get(sid);
-            if (s && !placed.has(s.id)) { spouse = s; break; }
-        }
-        if (spouse) placed.add(spouse.id);
-
-        // Collect children from both
-        const cids = new Set(person.childrenIds);
-        if (spouse) spouse.childrenIds.forEach(id => cids.add(id));
-
-        const children = [...cids]
-            .map(id => map.get(id)).filter(Boolean)
-            .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
-            .map(child => {
-                // If this child is a bridge person and is already placed,
-                // render them as a bridge leaf in this tree
-                if (bridgeIds.has(child.id) && placed.has(child.id)) {
-                    return buildTree(child, true);
-                }
-                return buildTree(child, false);
-            }).filter(Boolean);
-
-        return { person: person, spouse: spouse, children: children, isBridgeLeaf: false };
-    }
-
-    // Step 5: Build all root family units
-    const coParentOf = detectCoParents(roots);
-    const units = [];
-    roots.sort((a, b) => (a.dob || '').localeCompare(b.dob || ''));
-    for (const r of roots) {
-        if (placed.has(r.id)) continue;
-        const mateId = coParentOf.get(r.id);
-        const mate = mateId ? map.get(mateId) : null;
-        if (mate && !placed.has(mate.id)) {
-            placed.add(r.id);
-            placed.add(mate.id);
-            const cids = new Set([...r.childrenIds, ...mate.childrenIds]);
-            const children = [...cids]
-                .map(id => map.get(id)).filter(Boolean)
-                .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
-                .map(child => {
-                    if (bridgeIds.has(child.id) && placed.has(child.id)) {
-                        return buildTree(child, true);
-                    }
-                    return buildTree(child, false);
-                }).filter(Boolean);
-            if (children.length) {
-                units.push({ person: r, spouse: mate, children: children, isBridgeLeaf: false });
-            }
-        } else {
-            const u = buildTree(r, false);
-            if (u) units.push(u);
-        }
-    }
-
-    // Step 6: Render
     const zc = document.createElement('div');
     zc.className = 'zoom-controls';
     zc.innerHTML = '<button onclick="treeZoom(0.15)">＋</button><button onclick="treeZoom(-0.15)">－</button><button onclick="treeZoomReset()">⟳</button>';
     c.appendChild(zc);
+
     const inner = document.createElement('div');
     inner.id = 'tree-inner';
     inner.style.transformOrigin = '0 0';
+
     const tree = document.createElement('div');
-    tree.className = 'tree';
-    units.forEach(u => tree.appendChild(unitEl(u)));
+    tree.className = 'layered-tree';
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.classList.add('tree-lines');
+    tree.appendChild(svg);
+
+    layout.rows.forEach(row => {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'generation-row';
+        row.units.forEach(unit => rowEl.appendChild(generationUnitEl(unit)));
+        tree.appendChild(rowEl);
+    });
+
     inner.appendChild(tree);
     c.appendChild(inner);
     initZoomPan(c, inner);
+
     requestAnimationFrame(function() {
-        c.querySelectorAll('.child-branch').forEach(function(br) {
-            var fu = br.querySelector(':scope > .child-unit-wrap > .family-unit');
-            var pn = fu ? fu.querySelector(':scope > .couple > .person-node') : null;
-            if (!pn) return;
-            var brR = br.getBoundingClientRect();
-            var pnR = pn.getBoundingClientRect();
-            if (brR.width === 0) return;
-            var pct = ((pnR.left + pnR.width / 2) - brR.left) / brR.width * 100;
-            br.style.setProperty('--conn-left', pct + '%');
-            br.style.setProperty('--conn-right', (100 - pct) + '%');
-        });
+        drawLayeredConnectors(tree, layout);
     });
 }
 
 // =============================================
 // TREE DOM BUILDERS
 // =============================================
-function unitEl(unit) {
-    const el = document.createElement('div');
-    el.className = 'family-unit';
-    const couple = document.createElement('div');
-    couple.className = 'couple';
-    couple.appendChild(nodeEl(unit.person, unit.isBridgeLeaf));
-    if (unit.spouse) {
-        const line = document.createElement('div');
-        line.className = 'spouse-line';
-        couple.appendChild(line);
-        couple.appendChild(nodeEl(unit.spouse, false));
-    }
-    el.appendChild(couple);
-    if (unit.children.length) {
-        const vl = document.createElement('div');
-        vl.className = 'vert-line';
-        el.appendChild(vl);
-        const row = document.createElement('div');
-        row.className = 'children-row';
-        unit.children.forEach(ch => {
-            const br = document.createElement('div');
-            br.className = 'child-branch';
-            const wr = document.createElement('div');
-            wr.className = 'child-unit-wrap';
-            wr.appendChild(unitEl(ch));
-            br.appendChild(wr);
-            row.appendChild(br);
-        });
-        el.appendChild(row);
-    }
-    return el;
-}
-
 function nodeEl(m, isBridgeLeaf) {
     const n = document.createElement('div');
     n.className = 'person-node' + (m.dod ? ' deceased' : '') + (isBridgeLeaf ? ' bridge-leaf' : '');
@@ -455,11 +591,10 @@ function initZoomPan(container, inner) {
         zoomState.dragging = false;
         container.style.cursor = 'grab';
     });
-    let lastTouchDist = 0, lastTouchMid = null;
+    let lastTouchDist = 0;
     container.addEventListener('touchstart', function(e) {
         if (e.touches.length === 2) {
             lastTouchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-            lastTouchMid = { x: (e.touches[0].clientX + e.touches[1].clientX) / 2, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 };
         } else if (e.touches.length === 1 && !e.target.closest('.person-node')) {
             zoomState.dragging = true;
             zoomState.startX = e.touches[0].clientX - zoomState.panX;
