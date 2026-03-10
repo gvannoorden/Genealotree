@@ -171,7 +171,7 @@ function initAuth() {
         }
     };
     btn.onclick = go;
-    inp.onkeydown = e => e.key === 'Enter' && go();
+    inp.onkeydown = e => { if (e.key === 'Enter') go(); };
 }
 
 function showApp() {
