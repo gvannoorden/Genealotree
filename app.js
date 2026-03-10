@@ -231,7 +231,7 @@ function initNav() {
     document.getElementById('panel-overlay').onclick = closeDetail;
     document.getElementById('search-input').oninput = renderList;
     window.addEventListener('resize', () => {
-        if (state.currentView === 'tree' && activeTreeRender) activeTreeRender();
+        if (state.currentView === 'tree') renderTree();
     });
 }
 
@@ -326,65 +326,6 @@ function buildGenerationLayout() {
         units: rowsMap.get(depth).slice().sort((a, b) => a.sortKey.localeCompare(b.sortKey)),
     }));
 
-    const unitPosition = new Map();
-    function refreshPositions() {
-        rows.forEach(row => row.units.forEach((unit, index) => unitPosition.set(unit.id, index)));
-    }
-
-    function parentUnitIdsForUnit(unit) {
-        const ids = new Set();
-        unit.members.forEach(member => {
-            member.parentIds.forEach(parentId => {
-                const parentUnitId = personToUnitId.get(parentId);
-                if (parentUnitId && parentUnitId !== unit.id) ids.add(parentUnitId);
-            });
-        });
-        return [...ids];
-    }
-
-    function childUnitIdsForUnit(unit) {
-        const ids = new Set();
-        unit.members.forEach(member => {
-            member.childrenIds.forEach(childId => {
-                const childUnitId = personToUnitId.get(childId);
-                if (childUnitId && childUnitId !== unit.id) ids.add(childUnitId);
-            });
-        });
-        return [...ids];
-    }
-
-    function avgPosition(ids) {
-        const vals = ids.filter(id => unitPosition.has(id)).map(id => unitPosition.get(id));
-        if (!vals.length) return null;
-        return vals.reduce((sum, v) => sum + v, 0) / vals.length;
-    }
-
-    refreshPositions();
-    for (let pass = 0; pass < 4; pass++) {
-        for (let i = 1; i < rows.length; i++) {
-            rows[i].units.sort((a, b) => {
-                const aPos = avgPosition(parentUnitIdsForUnit(a));
-                const bPos = avgPosition(parentUnitIdsForUnit(b));
-                if (aPos != null && bPos != null && aPos !== bPos) return aPos - bPos;
-                if (aPos != null && bPos == null) return -1;
-                if (aPos == null && bPos != null) return 1;
-                return a.sortKey.localeCompare(b.sortKey);
-            });
-            refreshPositions();
-        }
-        for (let i = rows.length - 2; i >= 0; i--) {
-            rows[i].units.sort((a, b) => {
-                const aPos = avgPosition(childUnitIdsForUnit(a));
-                const bPos = avgPosition(childUnitIdsForUnit(b));
-                if (aPos != null && bPos != null && aPos !== bPos) return aPos - bPos;
-                if (aPos != null && bPos == null) return -1;
-                if (aPos == null && bPos != null) return 1;
-                return a.sortKey.localeCompare(b.sortKey);
-            });
-            refreshPositions();
-        }
-    }
-
     const familiesMap = new Map();
     members.forEach(child => {
         const parentIds = child.parentIds.filter(pid => memberMap.has(pid)).sort();
@@ -399,9 +340,10 @@ function buildGenerationLayout() {
     const families = [...familiesMap.values()].map(family => ({
         ...family,
         childIds: family.childIds.slice().sort((a, b) => memberSort(memberMap.get(a), memberMap.get(b))),
+        childUnitIds: [...new Set(family.childIds.map(id => personToUnitId.get(id)).filter(Boolean))],
     }));
 
-    return { rows, families, personToUnitId };
+    return { rows, families, personToUnitId, unitMap, memberMap };
 }
 
 function generationUnitEl(unit) {
@@ -425,45 +367,240 @@ function generationUnitEl(unit) {
     return el;
 }
 
-function drawFamilyConnectors(treeEl, layout) {
+function renderTree() {
+    const c = document.getElementById('tree-container');
+    c.innerHTML = '';
+    if (!state.members.length) {
+        c.innerHTML = '<div class="empty-state">🌱 No family members yet!<br>Click <b>➕ Add Member</b> to get started.</div>';
+        activeTreeRender = null;
+        return;
+    }
+
+    const layout = buildGenerationLayout();
+    const unitGap = 28;
+    const rowGap = 64;
+    const sidePad = 60;
+    const topPad = 20;
+    const bottomPad = 60;
+
+    const zc = document.createElement('div');
+    zc.className = 'zoom-controls';
+    zc.innerHTML = '<button onclick="treeZoom(0.15)">＋</button><button onclick="treeZoom(-0.15)">－</button><button onclick="treeZoomReset()">⟳</button>';
+    c.appendChild(zc);
+
+    const inner = document.createElement('div');
+    inner.id = 'tree-inner';
+    inner.style.transformOrigin = '0 0';
+
+    const tree = document.createElement('div');
+    tree.className = 'layered-tree';
+    tree.style.display = 'block';
+    tree.style.position = 'relative';
+    tree.style.minWidth = '0';
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.classList.add('tree-lines');
+    tree.appendChild(svg);
+
+    const unitEls = new Map();
+    layout.rows.forEach(row => {
+        row.units.forEach(unit => {
+            const el = generationUnitEl(unit);
+            el.style.position = 'absolute';
+            el.style.left = '0px';
+            el.style.top = '0px';
+            el.style.visibility = 'hidden';
+            tree.appendChild(el);
+            unitEls.set(unit.id, el);
+        });
+    });
+
+    inner.appendChild(tree);
+    c.appendChild(inner);
+
+    const metrics = new Map();
+    const personLocalAnchors = new Map();
+    layout.rows.forEach(row => {
+        row.units.forEach(unit => {
+            const el = unitEls.get(unit.id);
+            metrics.set(unit.id, {
+                width: el.offsetWidth || 0,
+                height: el.offsetHeight || 0,
+            });
+            el.querySelectorAll('.person-node[data-person-id]').forEach(node => {
+                personLocalAnchors.set(node.dataset.personId, {
+                    x: node.offsetLeft + node.offsetWidth / 2,
+                    top: node.offsetTop,
+                    bottom: node.offsetTop + node.offsetHeight,
+                });
+            });
+        });
+    });
+
+    const rowY = new Map();
+    let cursorY = topPad;
+    layout.rows.forEach(row => {
+        const maxH = Math.max(...row.units.map(unit => metrics.get(unit.id)?.height || 0), 0);
+        rowY.set(row.depth, cursorY);
+        cursorY += maxH + rowGap;
+    });
+
+    const placed = new Map();
+    const assignedUnits = new Set();
+
+    function globalAnchor(personId) {
+        const unitId = layout.personToUnitId.get(personId);
+        const box = placed.get(unitId);
+        const local = personLocalAnchors.get(personId);
+        if (!box || !local) return null;
+        return {
+            x: box.x + local.x,
+            top: box.y + local.top,
+            bottom: box.y + local.bottom,
+        };
+    }
+
+    function placeUnit(unitId, x, y) {
+        const size = metrics.get(unitId);
+        if (!size) return;
+        placed.set(unitId, { x, y, width: size.width, height: size.height });
+        assignedUnits.add(unitId);
+    }
+
+    if (layout.rows.length) {
+        let x = sidePad;
+        layout.rows[0].units.forEach(unit => {
+            placeUnit(unit.id, x, rowY.get(unit.depth));
+            x += (metrics.get(unit.id)?.width || 0) + unitGap;
+        });
+    }
+
+    for (let rowIndex = 1; rowIndex < layout.rows.length; rowIndex++) {
+        const row = layout.rows[rowIndex];
+        const rowUnitIds = new Set(row.units.map(unit => unit.id));
+        const familyBlocks = layout.families
+            .map(family => ({
+                ...family,
+                rowChildUnitIds: family.childUnitIds.filter(unitId => rowUnitIds.has(unitId)),
+            }))
+            .filter(family => family.rowChildUnitIds.length)
+            .sort((a, b) => {
+                const ax = averageParentX(a.parentIds);
+                const bx = averageParentX(b.parentIds);
+                return ax - bx;
+            });
+
+        let nextX = sidePad;
+
+        familyBlocks.forEach(block => {
+            const childUnitIds = block.rowChildUnitIds.filter(unitId => !assignedUnits.has(unitId));
+            if (!childUnitIds.length) return;
+
+            const totalWidth = childUnitIds.reduce((sum, unitId) => sum + (metrics.get(unitId)?.width || 0), 0) + unitGap * Math.max(0, childUnitIds.length - 1);
+            const parentCenter = averageParentX(block.parentIds);
+            let startX = Math.round(parentCenter - totalWidth / 2);
+            if (startX < nextX) startX = nextX;
+            if (startX < sidePad) startX = sidePad;
+
+            let x = startX;
+            childUnitIds.forEach(unitId => {
+                placeUnit(unitId, x, rowY.get(row.depth));
+                x += (metrics.get(unitId)?.width || 0) + unitGap;
+            });
+            nextX = x + unitGap;
+        });
+
+        row.units.forEach(unit => {
+            if (assignedUnits.has(unit.id)) return;
+            const desiredCenter = averageImmediateParentX(unit);
+            const width = metrics.get(unit.id)?.width || 0;
+            let x = Math.round(desiredCenter - width / 2);
+            if (!isFinite(x)) x = nextX;
+            if (x < nextX) x = nextX;
+            if (x < sidePad) x = sidePad;
+            placeUnit(unit.id, x, rowY.get(row.depth));
+            nextX = x + width + unitGap;
+        });
+    }
+
+    const allBoxes = [...placed.values()];
+    const treeWidth = Math.max(...allBoxes.map(box => box.x + box.width), 0) + sidePad;
+    const treeHeight = Math.max(...allBoxes.map(box => box.y + box.height), 0) + bottomPad;
+    tree.style.width = treeWidth + 'px';
+    tree.style.height = treeHeight + 'px';
+
+    layout.rows.forEach(row => {
+        row.units.forEach(unit => {
+            const el = unitEls.get(unit.id);
+            const box = placed.get(unit.id);
+            if (!el || !box) return;
+            el.style.left = box.x + 'px';
+            el.style.top = box.y + 'px';
+            el.style.visibility = 'visible';
+        });
+    });
+
+    activeTreeRender = () => {
+        drawFamilyConnectors(tree, layout, placed, personLocalAnchors);
+    };
+    activeTreeRender();
+    initZoomPan(c, inner);
+
+    function averageParentX(parentIds) {
+        const xs = parentIds.map(id => globalAnchor(id)?.x).filter(v => typeof v === 'number');
+        if (!xs.length) return nextUnplacedCenter(rowIndex);
+        return xs.reduce((sum, v) => sum + v, 0) / xs.length;
+    }
+
+    function averageImmediateParentX(unit) {
+        const xs = [];
+        unit.members.forEach(member => {
+            member.parentIds.forEach(parentId => {
+                const anchor = globalAnchor(parentId);
+                if (anchor) xs.push(anchor.x);
+            });
+        });
+        if (!xs.length) return nextUnplacedCenter(rowIndex);
+        return xs.reduce((sum, v) => sum + v, 0) / xs.length;
+    }
+
+    function nextUnplacedCenter(rowIndexValue) {
+        const rowValue = layout.rows[rowIndexValue];
+        if (!rowValue) return sidePad;
+        const alreadyPlaced = rowValue.units
+            .map(unit => placed.get(unit.id))
+            .filter(Boolean)
+            .sort((a, b) => a.x - b.x);
+        if (!alreadyPlaced.length) return sidePad;
+        const last = alreadyPlaced[alreadyPlaced.length - 1];
+        return last.x + last.width / 2 + unitGap * 2;
+    }
+}
+
+function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
     const svg = treeEl.querySelector('.tree-lines');
     if (!svg) return;
 
     const ns = 'http://www.w3.org/2000/svg';
     svg.innerHTML = '';
 
-    const width = Math.ceil(treeEl.scrollWidth || treeEl.offsetWidth || 0);
-    const height = Math.ceil(treeEl.scrollHeight || treeEl.offsetHeight || 0);
+    const width = Math.ceil(treeEl.offsetWidth || treeEl.scrollWidth || 0);
+    const height = Math.ceil(treeEl.offsetHeight || treeEl.scrollHeight || 0);
     svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
     svg.setAttribute('width', width);
     svg.setAttribute('height', height);
 
-    function boxInTree(el) {
-        let x = 0;
-        let y = 0;
-        let cur = el;
-        while (cur && cur !== treeEl) {
-            x += cur.offsetLeft || 0;
-            y += cur.offsetTop || 0;
-            cur = cur.offsetParent;
-        }
+    function anchorFor(personId) {
+        const unitId = layout.personToUnitId.get(personId);
+        const box = placed.get(unitId);
+        const local = personLocalAnchors.get(personId);
+        if (!box || !local) return null;
         return {
-            left: x,
-            top: y,
-            width: el.offsetWidth || 0,
-            height: el.offsetHeight || 0,
+            x: box.x + local.x,
+            top: box.y + local.top,
+            bottom: box.y + local.bottom,
         };
     }
-
-    const anchors = new Map();
-    treeEl.querySelectorAll('.person-node[data-person-id]').forEach(node => {
-        const box = boxInTree(node);
-        anchors.set(node.dataset.personId, {
-            x: box.left + box.width / 2,
-            top: box.top,
-            bottom: box.top + box.height,
-        });
-    });
 
     function addLine(x1, y1, x2, y2) {
         const line = document.createElementNS(ns, 'line');
@@ -478,8 +615,8 @@ function drawFamilyConnectors(treeEl, layout) {
     }
 
     layout.families.forEach(family => {
-        const parents = family.parentIds.map(id => anchors.get(id)).filter(Boolean).sort((a, b) => a.x - b.x);
-        const children = family.childIds.map(id => anchors.get(id)).filter(Boolean).sort((a, b) => a.x - b.x);
+        const parents = family.parentIds.map(anchorFor).filter(Boolean).sort((a, b) => a.x - b.x);
+        const children = family.childIds.map(anchorFor).filter(Boolean).sort((a, b) => a.x - b.x);
         if (!parents.length || !children.length) return;
 
         const parentBottom = Math.max(...parents.map(parent => parent.bottom));
@@ -489,12 +626,13 @@ function drawFamilyConnectors(treeEl, layout) {
 
         const coupleStemY = parentBottom + Math.max(10, Math.min(18, Math.round(gap * 0.16)));
         const childBusY = childTop - Math.max(18, Math.min(28, Math.round(gap * 0.25)));
+        const childCenter = children.reduce((sum, child) => sum + child.x, 0) / children.length;
 
         let trunkX;
         if (parents.length >= 2) {
             const leftX = parents[0].x;
             const rightX = parents[parents.length - 1].x;
-            trunkX = (leftX + rightX) / 2;
+            trunkX = Math.max(leftX, Math.min(rightX, childCenter));
             parents.forEach(parent => addLine(parent.x, parent.bottom, parent.x, coupleStemY));
             addLine(leftX, coupleStemY, rightX, coupleStemY);
         } else {
@@ -513,50 +651,6 @@ function drawFamilyConnectors(treeEl, layout) {
             addLine(startX, startY, child.x, child.top);
         });
     });
-}
-
-function renderTree() {
-    const c = document.getElementById('tree-container');
-    c.innerHTML = '';
-    if (!state.members.length) {
-        c.innerHTML = '<div class="empty-state">🌱 No family members yet!<br>Click <b>➕ Add Member</b> to get started.</div>';
-        activeTreeRender = null;
-        return;
-    }
-
-    const layout = buildGenerationLayout();
-
-    const zc = document.createElement('div');
-    zc.className = 'zoom-controls';
-    zc.innerHTML = '<button onclick="treeZoom(0.15)">＋</button><button onclick="treeZoom(-0.15)">－</button><button onclick="treeZoomReset()">⟳</button>';
-    c.appendChild(zc);
-
-    const inner = document.createElement('div');
-    inner.id = 'tree-inner';
-    inner.style.transformOrigin = '0 0';
-
-    const tree = document.createElement('div');
-    tree.className = 'layered-tree';
-
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.classList.add('tree-lines');
-    tree.appendChild(svg);
-
-    layout.rows.forEach(row => {
-        const rowEl = document.createElement('div');
-        rowEl.className = 'generation-row';
-        row.units.forEach(unit => rowEl.appendChild(generationUnitEl(unit)));
-        tree.appendChild(rowEl);
-    });
-
-    inner.appendChild(tree);
-    c.appendChild(inner);
-    initZoomPan(c, inner);
-
-    activeTreeRender = () => {
-        requestAnimationFrame(() => drawFamilyConnectors(tree, layout));
-    };
-    activeTreeRender();
 }
 
 // =============================================
