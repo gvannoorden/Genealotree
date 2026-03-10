@@ -31,7 +31,8 @@ async function apiFetch(endpoint, method = 'POST', body = null) {
         },
     };
     if (body && method !== 'GET') opts.body = JSON.stringify(body);
-    const res = await fetch(CONFIG.PROXY_URL + endpoint, opts);
+    const base = CONFIG.PROXY_URL.replace(/\/+$/, '');
+    const res = await fetch(base + endpoint, opts);
     if (!res.ok) throw new Error('API ' + res.status + ': ' + (await res.text()));
     return res.json();
 }
