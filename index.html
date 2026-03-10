@@ -90,9 +90,19 @@
         /* TREE VIEW */
         #tree-view { position: relative; }
         #tree-container { overflow: hidden; cursor: grab; padding: 40px 20px; min-height: calc(100vh - 57px); }
-        .tree { display: inline-flex; justify-content: center; min-width: 100%; padding: 20px; }
-        .family-unit { display: flex; flex-direction: column; align-items: center; }
-        .couple { display: flex; align-items: center; }
+        .layered-tree {
+            position: relative; display: flex; flex-direction: column; align-items: center;
+            gap: 42px; min-width: max-content; padding: 20px 40px 60px;
+        }
+        .tree-lines {
+            position: absolute; inset: 0; overflow: visible; pointer-events: none; z-index: 0;
+        }
+        .generation-row {
+            display: flex; justify-content: center; align-items: flex-start;
+            gap: 28px; width: max-content; position: relative; z-index: 1;
+        }
+        .generation-unit { position: relative; z-index: 1; }
+        .generation-couple { display: flex; align-items: center; }
         .spouse-line {
             width: 32px; height: 3px; background: var(--primary); border-radius: 2px;
             position: relative; margin: 0 4px;
@@ -101,25 +111,6 @@
             content: '\1F49B'; position: absolute; top: -12px; left: 50%;
             transform: translateX(-50%); font-size: 11px; line-height: 1;
         }
-        .vert-line { width: 3px; height: 24px; background: var(--line-color); border-radius: 2px; }
-        .children-row { display: flex; }
-        .child-branch {
-            display: flex; flex-direction: column; align-items: center;
-            padding: 0 10px; position: relative;
-        }
-        .child-branch::before {
-            content: ''; position: absolute; top: 0; left: var(--conn-left, 50%); width: 3px;
-            height: 24px; background: var(--line-color); border-radius: 2px; transform: translateX(-50%);
-        }
-        .child-branch::after {
-            content: ''; position: absolute; top: 0; height: 3px;
-            background: var(--line-color); border-radius: 2px;
-        }
-        .child-branch:first-child::after { left: var(--conn-left, 50%); right: 0; }
-        .child-branch:last-child::after { left: 0; right: var(--conn-right, 50%); }
-        .child-branch:not(:first-child):not(:last-child)::after { left: 0; right: 0; }
-        .child-branch:only-child::after { display: none; }
-        .child-unit-wrap { padding-top: 24px; }
         /* BRIDGE LEAF — person shown as a leaf reference in their birth family */
         .person-node.bridge-leaf { border: 2px dashed var(--primary); opacity: 0.85; }
         .person-node.bridge-leaf:hover { opacity: 1; }
