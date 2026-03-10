@@ -61,23 +61,39 @@ const pFile = p => {
 function parseMember(pg) {
     const p = pg.properties;
     return {
-        id: pg.id, name: pTitle(p['Name']), middleName: pText(p['Middle Name']),
-        photo: pFile(p['Photo']), dob: pDate(p['Date of Birth']), dod: pDate(p['Date of Death']),
-        spouseIds: pRel(p['Spouse']), childrenIds: pRel(p['Children']),
-        parentIds: pRel(p['Parents']), eventIds: pRel(p['Events']), storyIds: pRel(p['Stories']),
+        id: pg.id,
+        name: pTitle(p['Name']),
+        middleName: pText(p['Middle Name']),
+        photo: pFile(p['Photo']),
+        dob: pDate(p['Date of Birth']),
+        dod: pDate(p['Date of Death']),
+        spouseIds: pRel(p['Spouse']),
+        childrenIds: pRel(p['Children']),
+        parentIds: pRel(p['Parents']),
+        eventIds: pRel(p['Events']),
+        storyIds: pRel(p['Stories']),
     };
 }
 
 function parseEvent(pg) {
     const p = pg.properties;
-    return { id: pg.id, title: pTitle(p['Title']), type: pSelect(p['Event Type']),
-        date: pDate(p['Date']), memberIds: pRel(p['Family Member']) };
+    return {
+        id: pg.id,
+        title: pTitle(p['Title']),
+        type: pSelect(p['Event Type']),
+        date: pDate(p['Date']),
+        memberIds: pRel(p['Family Member'])
+    };
 }
 
 function parseStory(pg) {
     const p = pg.properties;
-    return { id: pg.id, title: pTitle(p['Title']), date: pDate(p['Date']),
-        memberIds: pRel(p['Family Member']) };
+    return {
+        id: pg.id,
+        title: pTitle(p['Title']),
+        date: pDate(p['Date']),
+        memberIds: pRel(p['Family Member'])
+    };
 }
 
 // =============================================
@@ -100,6 +116,7 @@ function normalizeRelationships() {
         }
     }
 }
+
 async function loadAll() {
     showLoading(true);
     try {
@@ -117,7 +134,9 @@ async function loadAll() {
     } catch (err) {
         console.error(err);
         toast('❌ Failed to load data — check console');
-    } finally { showLoading(false); }
+    } finally {
+        showLoading(false);
+    }
 }
 
 // =============================================
@@ -126,12 +145,9 @@ async function loadAll() {
 const getMember = id => state.members.find(m => m.id === id);
 const getEvents = id => state.events.filter(e => e.memberIds.includes(id));
 const getStories = id => state.stories.filter(s => s.memberIds.includes(id));
-const fmtDate = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US',
-    { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+const fmtDate = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 const getYear = d => d ? new Date(d + 'T00:00:00').getFullYear() : null;
-const photoEl = url => url
-    ? '<img src="' + url + '" onerror="this.outerHTML=SILHOUETTE">'
-    : SILHOUETTE;
+const photoEl = url => url ? '<img src="' + url + '" onerror="this.outerHTML=SILHOUETTE">' : SILHOUETTE;
 
 function showLoading(v) {
     document.getElementById('loading-overlay').classList.toggle('hidden', !v);
@@ -148,8 +164,7 @@ function calcAge(dob, dod) {
     const end = dod ? new Date(dod + 'T00:00:00') : new Date();
     const b = new Date(dob + 'T00:00:00');
     let a = end.getFullYear() - b.getFullYear();
-    if (end.getMonth() < b.getMonth() ||
-        (end.getMonth() === b.getMonth() && end.getDate() < b.getDate())) a--;
+    if (end.getMonth() < b.getMonth() || (end.getMonth() === b.getMonth() && end.getDate() < b.getDate())) a--;
     return a;
 }
 
@@ -267,9 +282,7 @@ function buildGenerationLayout() {
 
     groups.forEach(group => {
         group.members.sort(memberSort);
-        group.sortKey = group.members
-            .map(m => (m.dob || '9999-12-31') + '|' + m.name)
-            .join('||');
+        group.sortKey = group.members.map(m => (m.dob || '9999-12-31') + '|' + m.name).join('||');
     });
 
     members.forEach(child => {
@@ -319,9 +332,7 @@ function buildGenerationLayout() {
     }
 
     [...rowsMap.keys()].sort((a, b) => a - b).forEach(depth => {
-        const layerGroups = rowsMap.get(depth)
-            .slice()
-            .sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+        const layerGroups = rowsMap.get(depth).slice().sort((a, b) => a.sortKey.localeCompare(b.sortKey));
         const remaining = new Set(layerGroups.map(group => group.id));
         const row = { depth, units: [] };
 
@@ -347,20 +358,15 @@ function buildGenerationLayout() {
                 }
             }
 
-            const membersInUnit = sourceGroups
-                .flatMap(sourceGroup => sourceGroup.members)
-                .sort(memberSort);
-
+            const membersInUnit = sourceGroups.flatMap(sourceGroup => sourceGroup.members).sort(memberSort);
             const unit = {
                 id: 'unit-' + depth + '-' + row.units.length + '-' + membersInUnit.map(m => m.id.slice(0, 4)).join(''),
-                depth: depth,
+                depth,
                 sourceGroupIds: sourceGroups.map(sourceGroup => sourceGroup.id),
                 members: membersInUnit,
                 parentUnitIds: new Set(),
                 childUnitIds: new Set(),
-                sortKey: membersInUnit
-                    .map(m => (m.dob || '9999-12-31') + '|' + m.name)
-                    .join('||'),
+                sortKey: membersInUnit.map(m => (m.dob || '9999-12-31') + '|' + m.name).join('||'),
             };
 
             row.units.push(unit);
@@ -389,9 +395,7 @@ function buildGenerationLayout() {
     }
 
     function averagePosition(ids) {
-        const values = [...ids]
-            .filter(id => positionByUnitId.has(id))
-            .map(id => positionByUnitId.get(id));
+        const values = [...ids].filter(id => positionByUnitId.has(id)).map(id => positionByUnitId.get(id));
         if (!values.length) return null;
         return values.reduce((sum, value) => sum + value, 0) / values.length;
     }
@@ -423,7 +427,32 @@ function buildGenerationLayout() {
         refreshPositions();
     }
 
-    return { rows: rows, units: rows.flatMap(row => row.units) };
+    refreshPositions();
+
+    const familiesMap = new Map();
+    rows.forEach(row => {
+        row.units.forEach(unit => {
+            if (!unit.parentUnitIds || !unit.parentUnitIds.size) return;
+            const parentIds = [...unit.parentUnitIds].sort();
+            const key = row.depth + '::' + parentIds.join('|');
+            if (!familiesMap.has(key)) {
+                familiesMap.set(key, {
+                    id: 'family-' + row.depth + '-' + parentIds.map(id => id.slice(-4)).join('-'),
+                    depth: row.depth,
+                    parentUnitIds: new Set(parentIds),
+                    childUnitIds: [],
+                });
+            }
+            familiesMap.get(key).childUnitIds.push(unit.id);
+        });
+    });
+
+    const families = [...familiesMap.values()].map(family => ({
+        ...family,
+        childUnitIds: family.childUnitIds.slice().sort((a, b) => (positionByUnitId.get(a) || 0) - (positionByUnitId.get(b) || 0)),
+    }));
+
+    return { rows, units: rows.flatMap(row => row.units), families };
 }
 
 function generationUnitEl(unit) {
@@ -486,49 +515,49 @@ function drawLayeredConnectors(treeEl, layout) {
         svg.appendChild(line);
     }
 
-    function addPath(d) {
-        const path = document.createElementNS(ns, 'path');
-        path.setAttribute('d', d);
-        path.setAttribute('fill', 'none');
-        path.setAttribute('stroke', 'var(--line-color)');
-        path.setAttribute('stroke-width', '3');
-        path.setAttribute('stroke-linecap', 'round');
-        path.setAttribute('stroke-linejoin', 'round');
-        svg.appendChild(path);
+    function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
     }
 
-    layout.units.forEach(unit => {
-        const child = anchors.get(unit.id);
-        if (!child || !unit.parentUnitIds || !unit.parentUnitIds.size) return;
-
-        const parents = [...unit.parentUnitIds]
+    (layout.families || []).forEach(family => {
+        const parents = [...family.parentUnitIds]
             .map(parentUnitId => anchors.get(parentUnitId))
             .filter(Boolean)
             .sort((a, b) => a.x - b.x);
 
-        if (!parents.length) return;
+        const children = family.childUnitIds
+            .map(childUnitId => anchors.get(childUnitId))
+            .filter(Boolean)
+            .sort((a, b) => a.x - b.x);
+
+        if (!parents.length || !children.length) return;
 
         const parentBottom = Math.max(...parents.map(parent => parent.bottom));
-        const gap = child.top - parentBottom;
-        if (gap <= 10) return;
+        const childTop = Math.min(...children.map(child => child.top));
+        const gap = childTop - parentBottom;
+        if (gap <= 12) return;
 
-        const busY = Math.min(
-            child.top - 16,
-            parentBottom + Math.max(18, Math.min(32, Math.round(gap * 0.45)))
-        );
+        const parentBusY = parentBottom + Math.max(18, Math.min(30, Math.round(gap * 0.28)));
+        let childBusY = childTop - Math.max(18, Math.min(30, Math.round(gap * 0.22)));
+        if (childBusY <= parentBusY + 12) childBusY = parentBusY + 14;
 
-        if (parents.length === 1) {
-            const parent = parents[0];
-            addPath('M ' + parent.x + ' ' + parent.bottom + ' V ' + busY + ' H ' + child.x + ' V ' + child.top);
-            return;
-        }
+        const parentXs = parents.map(parent => parent.x);
+        const childXs = children.map(child => child.x);
+        const parentMin = Math.min(...parentXs);
+        const parentMax = Math.max(...parentXs);
+        const childAvg = childXs.reduce((sum, x) => sum + x, 0) / childXs.length;
+        const trunkX = parents.length > 1 ? clamp(childAvg, parentMin, parentMax) : parentXs[0];
 
-        parents.forEach(parent => addLine(parent.x, parent.bottom, parent.x, busY));
+        parents.forEach(parent => addLine(parent.x, parent.bottom, parent.x, parentBusY));
+        if (parents.length > 1) addLine(parentMin, parentBusY, parentMax, parentBusY);
 
-        const xs = parents.map(parent => parent.x);
-        xs.push(child.x);
-        addLine(Math.min(...xs), busY, Math.max(...xs), busY);
-        addLine(child.x, busY, child.x, child.top);
+        addLine(trunkX, parentBusY, trunkX, childBusY);
+
+        const childBusStart = Math.min(trunkX, ...childXs);
+        const childBusEnd = Math.max(trunkX, ...childXs);
+        addLine(childBusStart, childBusY, childBusEnd, childBusY);
+
+        children.forEach(child => addLine(child.x, childBusY, child.x, child.top));
     });
 }
 
@@ -669,8 +698,7 @@ function renderList() {
     let members = [...state.members].sort((a, b) => a.name.localeCompare(b.name));
     if (q) members = members.filter(m => (m.name + ' ' + m.middleName).toLowerCase().includes(q));
     if (!members.length) {
-        c.innerHTML = '<div class="empty-state" style="grid-column:1/-1">' +
-            (q ? '🔍 No matches' : '🌱 No members yet!') + '</div>';
+        c.innerHTML = '<div class="empty-state" style="grid-column:1/-1">' + (q ? '🔍 No matches' : '🌱 No members yet!') + '</div>';
         return;
     }
     c.innerHTML = members.map(m => {
@@ -682,8 +710,7 @@ function renderList() {
         if (st.length) badges += '<span class="badge badge-story">📖 ' + st.length + '</span>';
         return '<div class="list-card" onclick="showDetail(\'' + m.id + '\')">' +
             '<div class="list-card-photo">' + photoEl(m.photo) + '</div>' +
-            '<div class="list-card-info"><h3>' + (m.dod ? '🕊️ ' : '') +
-            esc(m.name) + (m.middleName ? ' ' + esc(m.middleName) : '') + '</h3>' +
+            '<div class="list-card-info"><h3>' + (m.dod ? '🕊️ ' : '') + esc(m.name) + (m.middleName ? ' ' + esc(m.middleName) : '') + '</h3>' +
             '<p>' + ds + '</p>' +
             (badges ? '<div class="list-card-badges">' + badges + '</div>' : '') +
             '</div></div>';
@@ -713,68 +740,57 @@ function showDetail(id) {
         '<div class="detail-body">';
     html += '<div class="detail-section"><div class="detail-section-header">' +
         '<span class="detail-section-title">📋 Details</span>' +
-        '<button class="btn btn-sm btn-outline" onclick="showEditModal(\'' + id + '\')">' +
-        '✏️ Edit</button></div>' +
+        '<button class="btn btn-sm btn-outline" onclick="showEditModal(\'' + id + '\')">✏️ Edit</button></div>' +
         '<div class="detail-info-grid">' +
         '<div class="info-item"><label>📅 Born</label><span>' + fmtDate(m.dob) + '</span></div>' +
-        '<div class="info-item"><label>' + (m.dod ? '🕊️ Died' : '🎂 Age') + '</label><span>' +
-        (m.dod ? fmtDate(m.dod) : m.dob ? calcAge(m.dob, m.dod) + ' years' : '—') +
-        '</span></div></div></div>';
+        '<div class="info-item"><label>' + (m.dod ? '🕊️ Died' : '🎂 Age') + '</label><span>' + (m.dod ? fmtDate(m.dod) : m.dob ? calcAge(m.dob, m.dod) + ' years' : '—') + '</span></div>' +
+        '</div></div>';
     if (spouse) {
-        html += '<div class="detail-section"><span class="detail-section-title">💛 Spouse</span>' +
-            '<div class="relation-chips" style="margin-top:8px">';
-        html += '<div class="relation-chip" onclick="showDetail(\'' + spouse.id + '\')">' +
-            '💛 ' + esc(spouse.name) + '</div>';
-        html += '</div></div>';
+        html += '<div class="detail-section"><span class="detail-section-title">💛 Spouse</span><div class="relation-chips" style="margin-top:8px">' +
+            '<div class="relation-chip" onclick="showDetail(\'' + spouse.id + '\')">💛 ' + esc(spouse.name) + '</div></div></div>';
     }
     if (parents.length) {
-        html += '<div class="detail-section"><span class="detail-section-title">👤 Parents</span>' +
-            '<div class="relation-chips" style="margin-top:8px">';
+        html += '<div class="detail-section"><span class="detail-section-title">👤 Parents</span><div class="relation-chips" style="margin-top:8px">';
         parents.forEach(p => {
-            html += '<div class="relation-chip" onclick="showDetail(\'' + p.id + '\')">' +
-                '👤 ' + esc(p.name) + '</div>';
+            html += '<div class="relation-chip" onclick="showDetail(\'' + p.id + '\')">👤 ' + esc(p.name) + '</div>';
         });
         html += '</div></div>';
     }
     if (children.length) {
-        html += '<div class="detail-section"><span class="detail-section-title">👶 Children</span>' +
-            '<div class="relation-chips" style="margin-top:8px">';
+        html += '<div class="detail-section"><span class="detail-section-title">👶 Children</span><div class="relation-chips" style="margin-top:8px">';
         children.forEach(c => {
-            html += '<div class="relation-chip" onclick="showDetail(\'' + c.id + '\')">' +
-                '👶 ' + esc(c.name) + '</div>';
+            html += '<div class="relation-chip" onclick="showDetail(\'' + c.id + '\')">👶 ' + esc(c.name) + '</div>';
         });
         html += '</div></div>';
     }
     html += '<div class="detail-section"><div class="detail-section-header">' +
         '<span class="detail-section-title">📅 Events (' + ev.length + ')</span>' +
-        '<button class="btn btn-sm btn-outline" onclick="showAddEventModal(\'' + id + '\')">' +
-        '➕</button></div>';
+        '<button class="btn btn-sm btn-outline" onclick="showAddEventModal(\'' + id + '\')">➕</button></div>';
     if (ev.length) {
         ev.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
         ev.forEach(e => {
             html += '<div class="event-card"><div class="event-card-header">' +
                 '<span class="event-type-icon">' + (EVENT_ICONS[e.type] || '📌') + '</span>' +
                 '<span class="event-title">' + esc(e.title) + '</span></div>' +
-                '<div class="event-date">' + (e.type || '') + (e.type && e.date ? ' · ' : '') +
-                fmtDate(e.date) + '</div></div>';
+                '<div class="event-date">' + (e.type || '') + (e.type && e.date ? ' · ' : '') + fmtDate(e.date) + '</div></div>';
         });
-    } else html += '<p style="color:var(--text-light);font-size:0.88rem">No events yet</p>';
+    } else {
+        html += '<p style="color:var(--text-light);font-size:0.88rem">No events yet</p>';
+    }
     html += '</div>';
     html += '<div class="detail-section"><div class="detail-section-header">' +
         '<span class="detail-section-title">📖 Stories (' + st.length + ')</span>' +
-        '<button class="btn btn-sm btn-outline" onclick="showAddStoryModal(\'' + id + '\')">' +
-        '➕</button></div>';
+        '<button class="btn btn-sm btn-outline" onclick="showAddStoryModal(\'' + id + '\')">➕</button></div>';
     if (st.length) {
         st.forEach(s => {
             html += '<div class="story-card" onclick="toggleStory(\'' + s.id + '\')">' +
-                '<div class="story-card-header"><span>📖</span>' +
-                '<span class="story-title">' + esc(s.title) + '</span></div>' +
+                '<div class="story-card-header"><span>📖</span><span class="story-title">' + esc(s.title) + '</span></div>' +
                 '<div class="story-date">' + fmtDate(s.date) + '</div>' +
-                '<div class="story-content" id="story-' + s.id + '" ' +
-                'style="display:none;margin-top:8px;font-size:0.85rem;white-space:pre-wrap;' +
-                'border-top:1px solid #eee;padding-top:8px"></div></div>';
+                '<div class="story-content" id="story-' + s.id + '" style="display:none;margin-top:8px;font-size:0.85rem;white-space:pre-wrap;border-top:1px solid #eee;padding-top:8px"></div></div>';
         });
-    } else html += '<p style="color:var(--text-light);font-size:0.88rem">No stories yet</p>';
+    } else {
+        html += '<p style="color:var(--text-light);font-size:0.88rem">No stories yet</p>';
+    }
     html += '</div></div>';
     panel.innerHTML = html;
     panel.classList.add('open');
@@ -795,22 +811,23 @@ async function toggleStory(id) {
             el.textContent = 'Loading...';
             try {
                 const d = await apiFetch('/v1/blocks/' + id + '/children?page_size=100', 'GET');
-                const txt = d.results.filter(b => b.type === 'paragraph')
-                    .map(b => b.paragraph.rich_text.map(t => t.plain_text).join('')).join('\n');
+                const txt = d.results.filter(b => b.type === 'paragraph').map(b => b.paragraph.rich_text.map(t => t.plain_text).join('')).join('\n');
                 el.textContent = txt || '(Empty)';
                 el.dataset.loaded = '1';
-            } catch { el.textContent = '(Could not load)'; }
+            } catch {
+                el.textContent = '(Could not load)';
+            }
         }
-    } else el.style.display = 'none';
+    } else {
+        el.style.display = 'none';
+    }
 }
 
 // =============================================
 // ADD PERSON MODAL
 // =============================================
 function showAddPersonModal() {
-    const opts = state.members.map(m =>
-        '<option value="' + m.id + '">' + esc(m.name) + '</option>'
-    ).join('');
+    const opts = state.members.map(m => '<option value="' + m.id + '">' + esc(m.name) + '</option>').join('');
     showModal(
         '<div class="modal-title">➕ Add Family Member</div>' +
         fg('👤 First Name *', '<input id="fm-name">') +
@@ -821,9 +838,7 @@ function showAddPersonModal() {
         fg('💛 Spouse', '<select id="fm-spouse"><option value="">— None —</option>' + opts + '</select>') +
         fg('👤 Parent 1', '<select id="fm-p1"><option value="">— None —</option>' + opts + '</select>') +
         fg('👤 Parent 2', '<select id="fm-p2"><option value="">— None —</option>' + opts + '</select>') +
-        '<div class="form-actions">' +
-        '<button class="btn btn-outline" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn btn-sage" onclick="submitAddPerson()">🌿 Add</button></div>'
+        '<div class="form-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-sage" onclick="submitAddPerson()">🌿 Add</button></div>'
     );
 }
 
@@ -845,13 +860,14 @@ async function submitAddPerson() {
     if (pids.length) props['Parents'] = { relation: pids.map(id => ({ id })) };
     try {
         toast('⏳ Creating...');
-        await apiFetch('/v1/pages', 'POST', {
-            parent: { database_id: CONFIG.FAMILY_DB_ID }, properties: props
-        });
+        await apiFetch('/v1/pages', 'POST', { parent: { database_id: CONFIG.FAMILY_DB_ID }, properties: props });
         closeModal();
         toast('✅ Member added!');
         await loadAll();
-    } catch (e) { console.error(e); toast('❌ Failed — check console'); }
+    } catch (e) {
+        console.error(e);
+        toast('❌ Failed — check console');
+    }
 }
 
 // =============================================
@@ -860,8 +876,7 @@ async function submitAddPerson() {
 function showEditModal(id) {
     const m = getMember(id);
     if (!m) return;
-    const opts = state.members.filter(x => x.id !== id)
-        .map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
+    const opts = state.members.filter(x => x.id !== id).map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
     showModal(
         '<div class="modal-title">✏️ Edit ' + esc(m.name) + '</div>' +
         fg('👤 First Name', '<input id="em-name" value="' + esc(m.name) + '">') +
@@ -872,10 +887,7 @@ function showEditModal(id) {
         fg('💛 Spouse', '<select id="em-spouse"><option value="">— None —</option>' + opts + '</select>') +
         fg('👤 Parent 1', '<select id="em-p1"><option value="">— None —</option>' + opts + '</select>') +
         fg('👤 Parent 2', '<select id="em-p2"><option value="">— None —</option>' + opts + '</select>') +
-        '<div class="form-actions">' +
-        '<button class="btn btn-outline" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn" onclick="submitEdit(\'' + id + '\')">' +
-        '💾 Save</button></div>'
+        '<div class="form-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn" onclick="submitEdit(\'' + id + '\')">💾 Save</button></div>'
     );
     if (m.spouseIds[0]) document.getElementById('em-spouse').value = m.spouseIds[0];
     if (m.parentIds[0]) document.getElementById('em-p1').value = m.parentIds[0];
@@ -905,7 +917,10 @@ async function submitEdit(id) {
         toast('✅ Updated!');
         await loadAll();
         if (state.selectedId) showDetail(state.selectedId);
-    } catch (e) { console.error(e); toast('❌ Failed — check console'); }
+    } catch (e) {
+        console.error(e);
+        toast('❌ Failed — check console');
+    }
 }
 
 // =============================================
@@ -913,17 +928,13 @@ async function submitEdit(id) {
 // =============================================
 function showAddEventModal(memberId) {
     const m = getMember(memberId);
-    const typeOpts = Object.entries(EVENT_ICONS)
-        .map(([k, v]) => '<option value="' + k + '">' + v + ' ' + k + '</option>').join('');
+    const typeOpts = Object.entries(EVENT_ICONS).map(([k, v]) => '<option value="' + k + '">' + v + ' ' + k + '</option>').join('');
     showModal(
         '<div class="modal-title">📅 Add Event' + (m ? ' for ' + esc(m.name) : '') + '</div>' +
         fg('📝 Title *', '<input id="ev-title" placeholder="e.g. Graduated from State U">') +
         fg('🏷️ Type', '<select id="ev-type"><option value="">— Select —</option>' + typeOpts + '</select>') +
         fg('📅 Date', '<input type="date" id="ev-date">') +
-        '<div class="form-actions">' +
-        '<button class="btn btn-outline" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn" onclick="submitEvent(\'' + memberId + '\')">' +
-        '📅 Add</button></div>'
+        '<div class="form-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn" onclick="submitEvent(\'' + memberId + '\')">📅 Add</button></div>'
     );
 }
 
@@ -940,14 +951,15 @@ async function submitEvent(memberId) {
     if (date) props['Date'] = { date: { start: date } };
     try {
         toast('⏳ Creating...');
-        await apiFetch('/v1/pages', 'POST', {
-            parent: { database_id: CONFIG.EVENTS_DB_ID }, properties: props
-        });
+        await apiFetch('/v1/pages', 'POST', { parent: { database_id: CONFIG.EVENTS_DB_ID }, properties: props });
         closeModal();
         toast('✅ Event added!');
         await loadAll();
         showDetail(memberId);
-    } catch (e) { console.error(e); toast('❌ Failed'); }
+    } catch (e) {
+        console.error(e);
+        toast('❌ Failed');
+    }
 }
 
 // =============================================
@@ -960,10 +972,7 @@ function showAddStoryModal(memberId) {
         fg('📝 Title *', '<input id="st-title" placeholder="e.g. The time Grandpa caught the big fish">') +
         fg('📅 When it happened', '<input type="date" id="st-date">') +
         fg('📖 Story', '<textarea id="st-text" rows="5" placeholder="Tell the story..."></textarea>') +
-        '<div class="form-actions">' +
-        '<button class="btn btn-outline" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn" onclick="submitStory(\'' + memberId + '\')">' +
-        '📖 Add</button></div>'
+        '<div class="form-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn" onclick="submitStory(\'' + memberId + '\')">📖 Add</button></div>'
     );
 }
 
@@ -978,14 +987,13 @@ async function submitStory(memberId) {
     if (date) props['Date'] = { date: { start: date } };
     try {
         toast('⏳ Creating...');
-        const pg = await apiFetch('/v1/pages', 'POST', {
-            parent: { database_id: CONFIG.STORIES_DB_ID }, properties: props
-        });
+        const pg = await apiFetch('/v1/pages', 'POST', { parent: { database_id: CONFIG.STORIES_DB_ID }, properties: props });
         const txt = document.getElementById('st-text').value.trim();
         if (txt) {
             await apiFetch('/v1/blocks/' + pg.id + '/children', 'PATCH', {
                 children: [{
-                    object: 'block', type: 'paragraph',
+                    object: 'block',
+                    type: 'paragraph',
                     paragraph: { rich_text: [{ type: 'text', text: { content: txt } }] }
                 }]
             });
@@ -994,7 +1002,10 @@ async function submitStory(memberId) {
         toast('✅ Story added!');
         await loadAll();
         showDetail(memberId);
-    } catch (e) { console.error(e); toast('❌ Failed'); }
+    } catch (e) {
+        console.error(e);
+        toast('❌ Failed');
+    }
 }
 
 // =============================================
