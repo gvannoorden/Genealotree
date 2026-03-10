@@ -120,13 +120,13 @@
         .child-branch:not(:first-child):not(:last-child)::after { left: 0; right: 0; }
         .child-branch:only-child::after { display: none; }
         .child-unit-wrap { padding-top: 24px; }
-        /* SPOUSE ANCESTRY (merged couple layout) */
-        .couple-merged { align-items: flex-end; }
-        .spouse-ancestry {
-            display: flex; flex-direction: column; align-items: center;
+        /* BRIDGE LEAF — person shown as a leaf reference in their birth family */
+        .person-node.bridge-leaf { border: 2px dashed var(--primary); opacity: 0.85; }
+        .person-node.bridge-leaf:hover { opacity: 1; }
+        .bridge-badge {
+            font-size: 0.68rem; color: var(--primary-dark); margin-top: 4px;
+            font-weight: 600; font-style: italic;
         }
-        .spouse-ancestry > .family-unit { margin-bottom: 0; }
-        .spouse-ancestry > .family-unit:last-child .children-row > .child-branch:last-child .child-unit-wrap > .family-unit > .couple > .person-node { border-color: var(--primary); border-width: 2px; }
         /* ZOOM CONTROLS */
         .zoom-controls {
             position: absolute; top: 12px; right: 12px; z-index: 10;
