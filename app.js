@@ -243,7 +243,6 @@ function renderTree() {
         placed.add(person.id);
         let spouse = person.spouseIds[0] ? map.get(person.spouseIds[0]) : null;
         if (spouse && placed.has(spouse.id)) spouse = null;
-        if (spouse) placed.add(spouse.id);
         const cids = new Set(person.childrenIds);
         if (spouse) spouse.childrenIds.forEach(id => cids.add(id));
         const children = [...cids].map(id => map.get(id)).filter(Boolean)
@@ -296,6 +295,20 @@ function renderTree() {
     inner.appendChild(tree);
     c.appendChild(inner);
     initZoomPan(c, inner);
+    // Adjust connector lines to point at the primary person, not couple center
+    requestAnimationFrame(function() {
+        c.querySelectorAll('.child-branch').forEach(function(br) {
+            var fu = br.querySelector(':scope > .child-unit-wrap > .family-unit');
+            var pn = fu ? fu.querySelector(':scope > .couple > .person-node') : null;
+            if (!pn) return;
+            var brR = br.getBoundingClientRect();
+            var pnR = pn.getBoundingClientRect();
+            if (brR.width === 0) return;
+            var pct = ((pnR.left + pnR.width / 2) - brR.left) / brR.width * 100;
+            br.style.setProperty('--conn-left', pct + '%');
+            br.style.setProperty('--conn-right', (100 - pct) + '%');
+        });
+    });
 }
 
 function unitEl(unit) {
