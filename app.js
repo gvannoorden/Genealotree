@@ -3,8 +3,7 @@
 // =============================================
 const CONFIG = {
     PASSWORD: 'sc0ttmill@r_ext',
-    NOTION_API_KEY: 'ntn_e35419233829AXMpotJqpIPopo9dwYl3V5igtss9K1H4g0',
-    PROXY_URL: 'https://silent-lab-14d9.scottmillergavin.workers.dev/', // e.g. https://family-tree-proxy.you.workers.dev
+    PROXY_URL: 'https://silent-lab-14d9.scottmillergavin.workers.dev', // Your Cloudflare Worker URL (API key is stored securely in Worker secrets)
     FAMILY_DB_ID: '107331c45b344f0e990ef7e7ec469f12',
     EVENTS_DB_ID: '551340f36d55480e86469feccbad14d4',
     STORIES_DB_ID: '21102098d4904caf99a29a691b38e02f',
@@ -24,11 +23,7 @@ let state = { members: [], events: [], stories: [], currentView: 'tree', selecte
 async function apiFetch(endpoint, method = 'POST', body = null) {
     const opts = {
         method,
-        headers: {
-            'Authorization': 'Bearer ' + CONFIG.NOTION_API_KEY,
-            'Notion-Version': '2022-06-28',
-            'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
     };
     if (body && method !== 'GET') opts.body = JSON.stringify(body);
     const base = CONFIG.PROXY_URL.replace(/\/+$/, '');
