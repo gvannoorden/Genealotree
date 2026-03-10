@@ -243,6 +243,7 @@ function renderTree() {
         placed.add(person.id);
         let spouse = person.spouseIds[0] ? map.get(person.spouseIds[0]) : null;
         if (spouse && placed.has(spouse.id)) spouse = null;
+        if (spouse) placed.add(spouse.id);
         const cids = new Set(person.childrenIds);
         if (spouse) spouse.childrenIds.forEach(id => cids.add(id));
         const children = [...cids].map(id => map.get(id)).filter(Boolean)
