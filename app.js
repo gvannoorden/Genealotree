@@ -230,18 +230,20 @@ function renderTree() {
         return;
     }
     const map = new Map(state.members.map(m => [m.id, m]));
-    const processed = new Set();
+    const built = new Set();
+    const rootSkip = new Set();
 
     // Find root ancestors (no parents in DB)
     const roots = state.members.filter(m =>
         m.parentIds.length === 0 || m.parentIds.every(p => !map.has(p))
     );
 
+    const rootIds = new Set(roots.map(r => r.id));
     function buildUnit(person) {
-        if (processed.has(person.id)) return null;
-        processed.add(person.id);
+        if (built.has(person.id)) return null;
+        built.add(person.id);
         const spouse = person.spouseIds[0] ? map.get(person.spouseIds[0]) : null;
-        if (spouse) processed.add(spouse.id);
+        if (spouse) rootSkip.add(spouse.id);
         const cids = new Set(person.childrenIds);
         if (spouse) spouse.childrenIds.forEach(id => cids.add(id));
         const children = [...cids].map(id => map.get(id)).filter(Boolean)
@@ -250,10 +252,31 @@ function renderTree() {
         return { person, spouse, children };
     }
 
+    // Detect co-parent pairs among roots (share a child but no spouse relation)
+    const coParentOf = new Map();
+    for (const r of roots) {
+        if (r.spouseIds.length > 0 || coParentOf.has(r.id)) continue;
+        for (const cid of r.childrenIds) {
+            const child = map.get(cid);
+            if (!child) continue;
+            const mate = child.parentIds.find(pid => pid !== r.id && rootIds.has(pid) && !coParentOf.has(pid));
+            if (mate) { coParentOf.set(r.id, mate); coParentOf.set(mate, r.id); break; }
+        }
+    }
     const units = [];
     roots.sort((a, b) => (a.dob || '').localeCompare(b.dob || ''));
     for (const r of roots) {
-        if (!processed.has(r.id)) {
+        if (built.has(r.id) || rootSkip.has(r.id)) continue;
+        const mateId = coParentOf.get(r.id);
+        const mate = mateId ? map.get(mateId) : null;
+        if (mate && !built.has(mate.id)) {
+            built.add(r.id); built.add(mate.id); rootSkip.add(mate.id);
+            const cids = new Set([...r.childrenIds, ...mate.childrenIds]);
+            const children = [...cids].map(id => map.get(id)).filter(Boolean)
+                .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
+                .map(c => buildUnit(c)).filter(Boolean);
+            if (children.length) units.push({ person: r, spouse: mate, children });
+        } else {
             const u = buildUnit(r);
             if (u) units.push(u);
         }
