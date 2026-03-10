@@ -432,20 +432,36 @@ function drawFamilyConnectors(treeEl, layout) {
     const ns = 'http://www.w3.org/2000/svg';
     svg.innerHTML = '';
 
-    const treeRect = treeEl.getBoundingClientRect();
-    const width = Math.ceil(treeEl.scrollWidth || treeEl.getBoundingClientRect().width);
-    const height = Math.ceil(treeEl.scrollHeight || treeEl.getBoundingClientRect().height);
+    const width = Math.ceil(treeEl.scrollWidth || treeEl.offsetWidth || 0);
+    const height = Math.ceil(treeEl.scrollHeight || treeEl.offsetHeight || 0);
     svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
     svg.setAttribute('width', width);
     svg.setAttribute('height', height);
 
+    function boxInTree(el) {
+        let x = 0;
+        let y = 0;
+        let cur = el;
+        while (cur && cur !== treeEl) {
+            x += cur.offsetLeft || 0;
+            y += cur.offsetTop || 0;
+            cur = cur.offsetParent;
+        }
+        return {
+            left: x,
+            top: y,
+            width: el.offsetWidth || 0,
+            height: el.offsetHeight || 0,
+        };
+    }
+
     const anchors = new Map();
     treeEl.querySelectorAll('.person-node[data-person-id]').forEach(node => {
-        const rect = node.getBoundingClientRect();
+        const box = boxInTree(node);
         anchors.set(node.dataset.personId, {
-            x: rect.left + rect.width / 2 - treeRect.left,
-            top: rect.top - treeRect.top,
-            bottom: rect.bottom - treeRect.top,
+            x: box.left + box.width / 2,
+            top: box.top,
+            bottom: box.top + box.height,
         });
     });
 
