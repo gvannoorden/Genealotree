@@ -230,8 +230,7 @@ function renderTree() {
         return;
     }
     const map = new Map(state.members.map(m => [m.id, m]));
-    const built = new Set();
-    const rootSkip = new Set();
+    const placed = new Set();
 
     // Find root ancestors (no parents in DB)
     const roots = state.members.filter(m =>
@@ -239,16 +238,17 @@ function renderTree() {
     );
 
     const rootIds = new Set(roots.map(r => r.id));
-    function buildUnit(person) {
-        if (built.has(person.id)) return null;
-        built.add(person.id);
-        const spouse = person.spouseIds[0] ? map.get(person.spouseIds[0]) : null;
-        if (spouse) rootSkip.add(spouse.id);
+    function buildTree(person) {
+        if (placed.has(person.id)) return null;
+        placed.add(person.id);
+        let spouse = person.spouseIds[0] ? map.get(person.spouseIds[0]) : null;
+        if (spouse && placed.has(spouse.id)) spouse = null;
+        if (spouse) placed.add(spouse.id);
         const cids = new Set(person.childrenIds);
         if (spouse) spouse.childrenIds.forEach(id => cids.add(id));
         const children = [...cids].map(id => map.get(id)).filter(Boolean)
             .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
-            .map(c => buildUnit(c)).filter(Boolean);
+            .map(c => buildTree(c)).filter(Boolean);
         return { person, spouse, children };
     }
 
@@ -266,26 +266,36 @@ function renderTree() {
     const units = [];
     roots.sort((a, b) => (a.dob || '').localeCompare(b.dob || ''));
     for (const r of roots) {
-        if (built.has(r.id) || rootSkip.has(r.id)) continue;
+        if (placed.has(r.id)) continue;
         const mateId = coParentOf.get(r.id);
         const mate = mateId ? map.get(mateId) : null;
-        if (mate && !built.has(mate.id)) {
-            built.add(r.id); built.add(mate.id); rootSkip.add(mate.id);
+        if (mate && !placed.has(mate.id)) {
+            placed.add(r.id); placed.add(mate.id);
             const cids = new Set([...r.childrenIds, ...mate.childrenIds]);
             const children = [...cids].map(id => map.get(id)).filter(Boolean)
                 .sort((a, b) => (a.dob || '').localeCompare(b.dob || ''))
-                .map(c => buildUnit(c)).filter(Boolean);
+                .map(c => buildTree(c)).filter(Boolean);
             if (children.length) units.push({ person: r, spouse: mate, children });
         } else {
-            const u = buildUnit(r);
+            const u = buildTree(r);
             if (u) units.push(u);
         }
     }
 
+    // Zoom controls
+    const zc = document.createElement('div');
+    zc.className = 'zoom-controls';
+    zc.innerHTML = '<button onclick="treeZoom(0.15)">＋</button><button onclick="treeZoom(-0.15)">－</button><button onclick="treeZoomReset()">⟳</button>';
+    c.appendChild(zc);
+    const inner = document.createElement('div');
+    inner.id = 'tree-inner';
+    inner.style.transformOrigin = '0 0';
     const tree = document.createElement('div');
     tree.className = 'tree';
     units.forEach(u => tree.appendChild(unitEl(u)));
-    c.appendChild(tree);
+    inner.appendChild(tree);
+    c.appendChild(inner);
+    initZoomPan(c, inner);
 }
 
 function unitEl(unit) {
@@ -338,6 +348,78 @@ function nodeEl(m) {
     return n;
 }
 
+// =============================================
+// ZOOM & PAN
+// =============================================
+let zoomState = { scale: 0.85, panX: 0, panY: 0, dragging: false, startX: 0, startY: 0 };
+function initZoomPan(container, inner) {
+    function applyTransform() {
+        inner.style.transform = 'translate(' + zoomState.panX + 'px,' + zoomState.panY + 'px) scale(' + zoomState.scale + ')';
+    }
+    applyTransform();
+    // Mouse wheel zoom
+    container.addEventListener('wheel', function(e) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.08 : 0.08;
+        zoomState.scale = Math.min(2, Math.max(0.2, zoomState.scale + delta));
+        applyTransform();
+    }, { passive: false });
+    // Mouse drag pan
+    container.addEventListener('mousedown', function(e) {
+        if (e.target.closest('.person-node') || e.target.closest('.zoom-controls')) return;
+        zoomState.dragging = true;
+        zoomState.startX = e.clientX - zoomState.panX;
+        zoomState.startY = e.clientY - zoomState.panY;
+        container.style.cursor = 'grabbing';
+    });
+    window.addEventListener('mousemove', function(e) {
+        if (!zoomState.dragging) return;
+        zoomState.panX = e.clientX - zoomState.startX;
+        zoomState.panY = e.clientY - zoomState.startY;
+        applyTransform();
+    });
+    window.addEventListener('mouseup', function() {
+        zoomState.dragging = false;
+        container.style.cursor = 'grab';
+    });
+    // Touch pinch zoom + drag
+    let lastTouchDist = 0, lastTouchMid = null;
+    container.addEventListener('touchstart', function(e) {
+        if (e.touches.length === 2) {
+            lastTouchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+            lastTouchMid = { x: (e.touches[0].clientX + e.touches[1].clientX) / 2, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 };
+        } else if (e.touches.length === 1 && !e.target.closest('.person-node')) {
+            zoomState.dragging = true;
+            zoomState.startX = e.touches[0].clientX - zoomState.panX;
+            zoomState.startY = e.touches[0].clientY - zoomState.panY;
+        }
+    }, { passive: true });
+    container.addEventListener('touchmove', function(e) {
+        if (e.touches.length === 2) {
+            e.preventDefault();
+            const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+            const ratio = dist / lastTouchDist;
+            zoomState.scale = Math.min(2, Math.max(0.2, zoomState.scale * ratio));
+            lastTouchDist = dist;
+            applyTransform();
+        } else if (e.touches.length === 1 && zoomState.dragging) {
+            zoomState.panX = e.touches[0].clientX - zoomState.startX;
+            zoomState.panY = e.touches[0].clientY - zoomState.startY;
+            applyTransform();
+        }
+    }, { passive: false });
+    container.addEventListener('touchend', function() { zoomState.dragging = false; });
+}
+function treeZoom(delta) {
+    zoomState.scale = Math.min(2, Math.max(0.2, zoomState.scale + delta));
+    const inner = document.getElementById('tree-inner');
+    if (inner) inner.style.transform = 'translate(' + zoomState.panX + 'px,' + zoomState.panY + 'px) scale(' + zoomState.scale + ')';
+}
+function treeZoomReset() {
+    zoomState = { scale: 0.85, panX: 0, panY: 0, dragging: false, startX: 0, startY: 0 };
+    const inner = document.getElementById('tree-inner');
+    if (inner) inner.style.transform = 'translate(0px,0px) scale(0.85)';
+}
 // =============================================
 // LIST VIEW
 // =============================================
