@@ -423,16 +423,7 @@ function buildGenerationLayout() {
         refreshPositions();
     }
 
-    const edges = [];
-    rows.forEach(row => {
-        row.units.forEach(unit => {
-            unit.childUnitIds.forEach(childUnitId => {
-                edges.push({ parentUnitId: unit.id, childUnitId: childUnitId });
-            });
-        });
-    });
-
-    return { rows: rows, units: rows.flatMap(row => row.units), edges: edges };
+    return { rows: rows, units: rows.flatMap(row => row.units) };
 }
 
 function generationUnitEl(unit) {
@@ -483,20 +474,61 @@ function drawLayeredConnectors(treeEl, layout) {
         });
     });
 
-    layout.edges.forEach(edge => {
-        const parent = anchors.get(edge.parentUnitId);
-        const child = anchors.get(edge.childUnitId);
-        if (!parent || !child) return;
+    function addLine(x1, y1, x2, y2) {
+        const line = document.createElementNS(ns, 'line');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        line.setAttribute('stroke', 'var(--line-color)');
+        line.setAttribute('stroke-width', '3');
+        line.setAttribute('stroke-linecap', 'round');
+        svg.appendChild(line);
+    }
 
-        const midY = parent.bottom + (child.top - parent.bottom) / 2;
+    function addPath(d) {
         const path = document.createElementNS(ns, 'path');
-        path.setAttribute('d', 'M ' + parent.x + ' ' + parent.bottom + ' V ' + midY + ' H ' + child.x + ' V ' + child.top);
+        path.setAttribute('d', d);
         path.setAttribute('fill', 'none');
         path.setAttribute('stroke', 'var(--line-color)');
         path.setAttribute('stroke-width', '3');
         path.setAttribute('stroke-linecap', 'round');
         path.setAttribute('stroke-linejoin', 'round');
         svg.appendChild(path);
+    }
+
+    layout.units.forEach(unit => {
+        const child = anchors.get(unit.id);
+        if (!child || !unit.parentUnitIds || !unit.parentUnitIds.size) return;
+
+        const parents = [...unit.parentUnitIds]
+            .map(parentUnitId => anchors.get(parentUnitId))
+            .filter(Boolean)
+            .sort((a, b) => a.x - b.x);
+
+        if (!parents.length) return;
+
+        const parentBottom = Math.max(...parents.map(parent => parent.bottom));
+        const gap = child.top - parentBottom;
+        if (gap <= 10) return;
+
+        const busY = Math.min(
+            child.top - 16,
+            parentBottom + Math.max(18, Math.min(32, Math.round(gap * 0.45)))
+        );
+
+        if (parents.length === 1) {
+            const parent = parents[0];
+            addPath('M ' + parent.x + ' ' + parent.bottom + ' V ' + busY + ' H ' + child.x + ' V ' + child.top);
+            return;
+        }
+
+        parents.forEach(parent => addLine(parent.x, parent.bottom, parent.x, busY));
+
+        const xs = parents.map(parent => parent.x);
+        xs.push(child.x);
+        addLine(Math.min(...xs), busY, Math.max(...xs), busY);
+        addLine(child.x, busY, child.x, child.top);
     });
 }
 
