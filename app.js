@@ -1120,13 +1120,14 @@ function renderTree() {
     zc.innerHTML = '<button onclick="treeZoom(0.15)">＋</button><button onclick="treeZoom(-0.15)">－</button><button onclick="treeZoomReset()">⟳</button>';
     c.appendChild(zc);
 
+    const focusMember = getMember(state.focusedId);
     const toolbar = document.createElement('div');
     toolbar.className = 'focus-toolbar';
-    const focusMember = getMember(state.focusedId);
     toolbar.innerHTML =
-        '<div class="focus-toolbar-copy"><span class="focus-toolbar-kicker">Focused Tree</span><strong>' + esc(focusMember?.name || 'Family') + '</strong><small>Click a person chip to recenter the tree. Use the three-dot button for details.</small></div>' +
-        '<div class="focus-toolbar-actions"><button class="btn btn-sm btn-outline" onclick="resetFocusTree()">Reset Focus</button><button class="btn btn-sm btn-outline" onclick="treeZoomReset()">Recenter View</button></div>';
-    c.appendChild(toolbar);
+        '<div class="focus-toolbar-name">' + esc(focusMember?.name || 'Family') + '</div>' +
+        '<button class="btn btn-sm btn-outline" onclick="resetFocusTree()">Reset Focus</button>' +
+        '<button class="btn btn-sm btn-outline" onclick="treeZoomReset()">Recenter View</button>';
+    zc.appendChild(toolbar);
 
     const inner = document.createElement('div');
     inner.id = 'tree-inner';
