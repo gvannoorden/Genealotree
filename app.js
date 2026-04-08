@@ -791,13 +791,19 @@ function buildFamilyIndex() {
     });
 
     const familyByChild = new Map();
+    const familiesByParentId = new Map();
     families.forEach(family => {
         family.childIds.forEach(childId => familyByChild.set(childId, family));
+        family.parentIds.forEach(parentId => {
+            if (!familiesByParentId.has(parentId)) familiesByParentId.set(parentId, []);
+            familiesByParentId.get(parentId).push(family);
+        });
     });
 
     return {
         memberMap,
         familyByChild,
+        familiesByParentId,
         familiesByParentKey: new Map(families.map(family => [family.key, family])),
     };
 }
@@ -822,61 +828,107 @@ function relationTitle(type, depth, members) {
     return 'Descendant Branch';
 }
 
-function buildAncestorBranch(personId, index, depth = 1, visited = new Set()) {
-    const family = index.familyByChild.get(personId);
+function householdGroupForParent(parentId, family, index) {
+    const parent = index.memberMap.get(parentId);
+    if (!parent) return null;
+    const otherBiologicalIds = family.parentIds.filter(id => id !== parentId);
+    const spouse = parent.spouseIds
+        .map(id => index.memberMap.get(id))
+        .filter(Boolean)
+        .find(candidate => !otherBiologicalIds.includes(candidate.id)) || null;
+    const members = spouse ? [parent, spouse].sort(memberSort) : [parent];
+    return {
+        key: keyFromIds(members.map(member => member.id)),
+        members,
+        biologicalIds: [parentId],
+    };
+}
+
+function buildAncestorGroupsForChild(childId, index) {
+    const family = index.familyByChild.get(childId);
     if (!family) return null;
-    const visitKey = family.key + ':' + personId;
+    const groups = new Map();
+    family.parentIds.forEach(parentId => {
+        const group = householdGroupForParent(parentId, family, index);
+        if (!group) return;
+        if (!groups.has(group.key)) {
+            groups.set(group.key, {
+                key: group.key,
+                members: group.members,
+                biologicalIds: [],
+                siblingIds: family.childIds.filter(id => id !== childId),
+            });
+        }
+        groups.get(group.key).biologicalIds.push(...group.biologicalIds);
+    });
+    return [...groups.values()];
+}
+
+function buildAncestorBranch(group, index, depth = 1, visited = new Set()) {
+    const visitKey = group.key + ':' + group.biologicalIds.slice().sort().join('|');
     if (visited.has(visitKey)) return null;
     const nextVisited = new Set(visited);
     nextVisited.add(visitKey);
 
-    const bundled = bundlePeople(family.childIds.filter(childId => childId !== personId), index.memberMap);
+    const bundled = bundlePeople(group.siblingIds || [], index.memberMap);
     const node = {
         id: 'ancestor:' + visitKey,
         type: 'ancestor',
         depth,
-        title: relationTitle('ancestor', depth, family.parentMembers),
-        members: family.parentMembers,
+        title: relationTitle('ancestor', depth, group.members),
+        members: group.members,
         bundle: bundled,
         children: [],
         meta: bundled.visible.length || bundled.overflow ? 'Also in this family' : '',
     };
 
-    family.parentIds.forEach(parentId => {
-        const branch = buildAncestorBranch(parentId, index, depth + 1, nextVisited);
+    const nextGroups = new Map();
+    group.biologicalIds.forEach(parentId => {
+        const ancestorGroups = buildAncestorGroupsForChild(parentId, index) || [];
+        ancestorGroups.forEach(ancestorGroup => {
+            if (!nextGroups.has(ancestorGroup.key)) nextGroups.set(ancestorGroup.key, ancestorGroup);
+            else nextGroups.get(ancestorGroup.key).biologicalIds.push(...ancestorGroup.biologicalIds);
+        });
+    });
+    [...nextGroups.values()].forEach(nextGroup => {
+        nextGroup.biologicalIds = [...new Set(nextGroup.biologicalIds)].sort();
+        const branch = buildAncestorBranch(nextGroup, index, depth + 1, nextVisited);
         if (branch) node.children.push(branch);
     });
 
     return node;
 }
 
-function buildDescendantBranch(primaryId, index, depth = 1, visited = new Set()) {
-    const primary = index.memberMap.get(primaryId);
-    if (!primary) return null;
-    const members = displayUnitForPerson(primary);
-    const familyKey = keyFromIds(members.map(member => member.id));
+function buildDescendantBranch(family, index, depth = 1, visited = new Set()) {
+    const familyKey = family.key;
     if (visited.has(familyKey)) return null;
     const nextVisited = new Set(visited);
     nextVisited.add(familyKey);
 
-    const family = index.familiesByParentKey.get(familyKey);
     const node = {
-        id: 'descendant:' + familyKey + ':' + primaryId,
+        id: 'descendant:' + familyKey,
         type: 'descendant',
         depth,
-        title: relationTitle('descendant', depth, members),
-        members,
+        title: relationTitle('descendant', depth, family.parentMembers),
+        members: family.parentMembers,
         bundle: { visible: [], overflow: 0 },
         children: [],
         meta: family?.childIds.length ? family.childIds.length + (family.childIds.length === 1 ? ' child' : ' children') : '',
     };
 
-    if (family) {
-        family.childUnits.forEach(childUnit => {
-            const branch = buildDescendantBranch(childUnit.primaryId, index, depth + 1, nextVisited);
+    family.childUnits.forEach(childUnit => {
+        const nextFamilies = childUnit.members
+            .flatMap(member => index.familiesByParentId.get(member.id) || [])
+            .filter(nextFamily => nextFamily.key !== family.key);
+        const uniqueFamilies = new Map();
+        nextFamilies.forEach(nextFamily => {
+            if (!uniqueFamilies.has(nextFamily.key)) uniqueFamilies.set(nextFamily.key, nextFamily);
+        });
+        [...uniqueFamilies.values()].forEach(nextFamily => {
+            const branch = buildDescendantBranch(nextFamily, index, depth + 1, nextVisited);
             if (branch) node.children.push(branch);
         });
-    }
+    });
 
     return node;
 }
@@ -900,14 +952,28 @@ function buildFocusedTreeModel() {
         meta: '',
     };
 
-    const ancestorRoots = rootMembers
-        .map(member => buildAncestorBranch(member.id, index, 1, new Set()))
-        .filter(Boolean);
+    const ancestorGroupMap = new Map();
+    rootMembers.forEach(member => {
+        const groups = buildAncestorGroupsForChild(member.id, index) || [];
+        groups.forEach(group => {
+            if (!ancestorGroupMap.has(group.key)) ancestorGroupMap.set(group.key, group);
+            else ancestorGroupMap.get(group.key).biologicalIds.push(...group.biologicalIds);
+        });
+    });
+    const ancestorRoots = [...ancestorGroupMap.values()].map(group => {
+        group.biologicalIds = [...new Set(group.biologicalIds)].sort();
+        return buildAncestorBranch(group, index, 1, new Set());
+    }).filter(Boolean);
 
-    const rootFamily = index.familiesByParentKey.get(rootKey);
-    const descendantRoots = rootFamily
-        ? rootFamily.childUnits.map(childUnit => buildDescendantBranch(childUnit.primaryId, index, 1, new Set())).filter(Boolean)
-        : [];
+    const descendantFamilyMap = new Map();
+    rootMembers.forEach(member => {
+        (index.familiesByParentId.get(member.id) || []).forEach(family => {
+            descendantFamilyMap.set(family.key, family);
+        });
+    });
+    const descendantRoots = [...descendantFamilyMap.values()]
+        .map(family => buildDescendantBranch(family, index, 1, new Set()))
+        .filter(Boolean);
 
     return { root, ancestorRoots, descendantRoots, focusedId };
 }
