@@ -750,6 +750,29 @@ function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
         svg.appendChild(line);
     }
 
+    function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    const familiesByRow = new Map();
+    layout.families.forEach(family => {
+        const junctionBox = placed.get(family.nodeId);
+        if (!junctionBox) return;
+        if (!familiesByRow.has(family.rowIndex)) familiesByRow.set(family.rowIndex, []);
+        familiesByRow.get(family.rowIndex).push({
+            family,
+            junctionCenterX: junctionBox.x + junctionBox.width / 2,
+        });
+    });
+
+    const familyLaneIndex = new Map();
+    const familyLaneCount = new Map();
+    [...familiesByRow.entries()].forEach(([rowIndex, items]) => {
+        items.sort((a, b) => a.junctionCenterX - b.junctionCenterX);
+        items.forEach((item, index) => familyLaneIndex.set(item.family.id, index));
+        familyLaneCount.set(rowIndex, items.length);
+    });
+
     layout.families.forEach(family => {
         const parents = family.parentIds.map(anchorFor).filter(Boolean).sort((a, b) => a.x - b.x);
         const children = family.childIds.map(anchorFor).filter(Boolean).sort((a, b) => a.x - b.x);
@@ -762,15 +785,32 @@ function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
         const childTop = Math.min(...children.map(child => child.top));
         if (childTop <= junctionY) return;
 
+        const laneIndex = familyLaneIndex.get(family.id) || 0;
+        const laneCount = familyLaneCount.get(family.rowIndex) || 1;
+        const parentAvailable = Math.max(12, junctionY - parentBottom - 8);
+        const childAvailable = Math.max(18, childTop - junctionY - 8);
+        const parentLaneStep = laneCount > 1 ? Math.max(8, Math.min(18, Math.floor(parentAvailable / (laneCount + 1)))) : 0;
+        const childLaneStep = laneCount > 1 ? Math.max(10, Math.min(22, Math.floor(childAvailable / (laneCount + 1)))) : 0;
+        const parentMergeY = clamp(
+            junctionY - (laneCount > 1 ? parentLaneStep * (laneIndex + 1) : Math.min(18, parentAvailable)),
+            parentBottom + 8,
+            junctionY - 6
+        );
+        const childBusY = clamp(
+            junctionY + (laneCount > 1 ? childLaneStep * (laneIndex + 1) : Math.min(26, childAvailable * 0.55)),
+            junctionY + 8,
+            childTop - 8
+        );
+
         const parentLeft = Math.min(...parents.map(parent => parent.x));
         const parentRight = Math.max(...parents.map(parent => parent.x));
         const parentBusX = parents.length > 1 ? Math.max(parentLeft, Math.min(parentRight, junctionX)) : parents[0].x;
-        const childBusY = junctionY + Math.max(18, Math.min(30, Math.round((childTop - junctionY) * 0.45)));
         const childLeft = Math.min(...children.map(child => child.x));
         const childRight = Math.max(...children.map(child => child.x));
 
-        parents.forEach(parent => addLine(parent.x, parent.bottom, parent.x, junctionY));
-        if (parents.length > 1) addLine(parentLeft, junctionY, parentRight, junctionY);
+        parents.forEach(parent => addLine(parent.x, parent.bottom, parent.x, parentMergeY));
+        if (parents.length > 1) addLine(parentLeft, parentMergeY, parentRight, parentMergeY);
+        addLine(parentBusX, parentMergeY, parentBusX, junctionY);
         if (parentBusX !== junctionX) addLine(parentBusX, junctionY, junctionX, junctionY);
         addLine(junctionX, junctionY, junctionX, childBusY);
         if (children.length > 1) addLine(childLeft, childBusY, childRight, childBusY);
