@@ -976,6 +976,12 @@ function createPlatformEl(node) {
     const card = document.createElement('div');
     card.className = 'focus-platform focus-platform-' + node.type;
     card.dataset.nodeId = node.id;
+    card.dataset.depth = String(node.depth || 0);
+
+    if (node.type === 'ancestor') {
+        const tintStrength = Math.min(0.24, 0.09 + Math.max(0, node.depth - 1) * 0.035);
+        card.style.setProperty('--ancestor-tint', 'rgba(188, 214, 170, ' + tintStrength.toFixed(3) + ')');
+    }
 
     const header = document.createElement('div');
     header.className = 'focus-platform-header';
