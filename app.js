@@ -1035,7 +1035,7 @@ function createPlatformEl(node) {
             chip.textContent = member.name;
             chip.onclick = e => {
                 e.stopPropagation();
-                focusAndShow(member.id);
+                setFocusedPerson(member.id, false);
             };
             chips.appendChild(chip);
         });
