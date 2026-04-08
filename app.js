@@ -750,6 +750,25 @@ function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
         svg.appendChild(line);
     }
 
+    function addOrthogonalPath(points) {
+        const cleaned = points.filter((point, index) => {
+            if (!point) return false;
+            if (!index) return true;
+            const prev = points[index - 1];
+            return !prev || prev.x !== point.x || prev.y !== point.y;
+        });
+        if (cleaned.length < 2) return;
+        const path = document.createElementNS(ns, 'path');
+        const d = cleaned.map((point, index) => (index ? 'L' : 'M') + point.x + ' ' + point.y).join(' ');
+        path.setAttribute('d', d);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', 'var(--line-color)');
+        path.setAttribute('stroke-width', '3');
+        path.setAttribute('stroke-linecap', 'round');
+        path.setAttribute('stroke-linejoin', 'round');
+        svg.appendChild(path);
+    }
+
     function clamp(value, min, max) {
         return Math.max(min, Math.min(max, value));
     }
@@ -787,19 +806,19 @@ function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
 
         const laneIndex = familyLaneIndex.get(family.id) || 0;
         const laneCount = familyLaneCount.get(family.rowIndex) || 1;
-        const parentAvailable = Math.max(12, junctionY - parentBottom - 8);
-        const childAvailable = Math.max(18, childTop - junctionY - 8);
-        const parentLaneStep = laneCount > 1 ? Math.max(8, Math.min(18, Math.floor(parentAvailable / (laneCount + 1)))) : 0;
-        const childLaneStep = laneCount > 1 ? Math.max(10, Math.min(22, Math.floor(childAvailable / (laneCount + 1)))) : 0;
+        const parentAvailable = Math.max(24, junctionY - parentBottom - 10);
+        const childAvailable = Math.max(30, childTop - junctionY - 10);
+        const parentLaneStep = laneCount > 1 ? Math.max(18, Math.min(34, Math.floor(parentAvailable / (laneCount + 1)))) : 0;
+        const childLaneStep = laneCount > 1 ? Math.max(22, Math.min(38, Math.floor(childAvailable / (laneCount + 1)))) : 0;
         const parentMergeY = clamp(
-            junctionY - (laneCount > 1 ? parentLaneStep * (laneIndex + 1) : Math.min(18, parentAvailable)),
-            parentBottom + 8,
-            junctionY - 6
+            junctionY - (laneCount > 1 ? parentLaneStep * (laneIndex + 1) : Math.min(26, parentAvailable)),
+            parentBottom + 10,
+            junctionY - 8
         );
         const childBusY = clamp(
-            junctionY + (laneCount > 1 ? childLaneStep * (laneIndex + 1) : Math.min(26, childAvailable * 0.55)),
-            junctionY + 8,
-            childTop - 8
+            junctionY + (laneCount > 1 ? childLaneStep * (laneIndex + 1) : Math.min(34, Math.round(childAvailable * 0.65))),
+            junctionY + 10,
+            childTop - 10
         );
 
         const parentLeft = Math.min(...parents.map(parent => parent.x));
@@ -808,16 +827,32 @@ function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
         const childLeft = Math.min(...children.map(child => child.x));
         const childRight = Math.max(...children.map(child => child.x));
 
-        parents.forEach(parent => addLine(parent.x, parent.bottom, parent.x, parentMergeY));
-        if (parents.length > 1) addLine(parentLeft, parentMergeY, parentRight, parentMergeY);
-        addLine(parentBusX, parentMergeY, parentBusX, junctionY);
-        if (parentBusX !== junctionX) addLine(parentBusX, junctionY, junctionX, junctionY);
-        addLine(junctionX, junctionY, junctionX, childBusY);
-        if (children.length > 1) addLine(childLeft, childBusY, childRight, childBusY);
+        parents.forEach(parent => addOrthogonalPath([
+            { x: parent.x, y: parent.bottom },
+            { x: parent.x, y: parentMergeY },
+        ]));
+        if (parents.length > 1) addOrthogonalPath([
+            { x: parentLeft, y: parentMergeY },
+            { x: parentRight, y: parentMergeY },
+        ]);
+        addOrthogonalPath([
+            { x: parentBusX, y: parentMergeY },
+            { x: parentBusX, y: junctionY },
+            { x: junctionX, y: junctionY },
+            { x: junctionX, y: childBusY },
+        ]);
+        if (children.length > 1) addOrthogonalPath([
+            { x: childLeft, y: childBusY },
+            { x: childRight, y: childBusY },
+        ]);
         children.forEach(child => {
             const startX = children.length > 1 ? child.x : junctionX;
             const startY = children.length > 1 ? childBusY : junctionY;
-            addLine(startX, startY, child.x, child.top);
+            addOrthogonalPath([
+                { x: startX, y: startY },
+                { x: child.x, y: startY },
+                { x: child.x, y: child.top },
+            ]);
         });
     });
 }
