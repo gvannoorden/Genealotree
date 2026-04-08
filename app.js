@@ -315,6 +315,13 @@ function buildGenerationLayout() {
         people.forEach(person => personToUnitId.set(person.id, unitId));
     });
 
+    [...unitMap.values()].forEach(unit => {
+        unit.parentUnitIds = [];
+        unit.childUnitIds = [];
+        unit.parentFamilyIds = [];
+        unit.childFamilyIds = [];
+    });
+
     const rowsMap = new Map();
     [...unitMap.values()].forEach(unit => {
         if (!rowsMap.has(unit.depth)) rowsMap.set(unit.depth, []);
@@ -341,9 +348,195 @@ function buildGenerationLayout() {
         ...family,
         childIds: family.childIds.slice().sort((a, b) => memberSort(memberMap.get(a), memberMap.get(b))),
         childUnitIds: [...new Set(family.childIds.map(id => personToUnitId.get(id)).filter(Boolean))],
+        parentUnitIds: [...new Set(family.parentIds.map(id => personToUnitId.get(id)).filter(Boolean))],
     }));
 
+    families.forEach(family => {
+        family.parentUnitIds.forEach(unitId => {
+            const unit = unitMap.get(unitId);
+            if (!unit) return;
+            unit.childFamilyIds.push(family.id);
+            family.childUnitIds.forEach(childUnitId => {
+                if (!unit.childUnitIds.includes(childUnitId)) unit.childUnitIds.push(childUnitId);
+            });
+        });
+
+        family.childUnitIds.forEach(unitId => {
+            const unit = unitMap.get(unitId);
+            if (!unit) return;
+            unit.parentFamilyIds.push(family.id);
+            family.parentUnitIds.forEach(parentUnitId => {
+                if (!unit.parentUnitIds.includes(parentUnitId)) unit.parentUnitIds.push(parentUnitId);
+            });
+        });
+    });
+
     return { rows, families, personToUnitId, unitMap, memberMap };
+}
+
+function median(values) {
+    if (!values.length) return null;
+    const sorted = values.slice().sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function optimizeRowOrder(layout) {
+    const rows = layout.rows.map(row => ({ ...row, units: row.units.slice() }));
+    const orderIndex = new Map();
+
+    function refreshOrderIndex() {
+        rows.forEach(row => {
+            row.units.forEach((unit, index) => {
+                orderIndex.set(unit.id, index);
+            });
+        });
+    }
+
+    function sortRow(row, neighborKey) {
+        row.units.sort((a, b) => {
+            const aNeighbors = a[neighborKey]
+                .map(unitId => orderIndex.get(unitId))
+                .filter(index => typeof index === 'number');
+            const bNeighbors = b[neighborKey]
+                .map(unitId => orderIndex.get(unitId))
+                .filter(index => typeof index === 'number');
+
+            const aMedian = median(aNeighbors);
+            const bMedian = median(bNeighbors);
+
+            if (aMedian != null && bMedian != null && aMedian !== bMedian) return aMedian - bMedian;
+            if (aMedian != null && bMedian == null) return -1;
+            if (aMedian == null && bMedian != null) return 1;
+
+            const aDegree = aNeighbors.length;
+            const bDegree = bNeighbors.length;
+            if (aDegree !== bDegree) return bDegree - aDegree;
+
+            return a.sortKey.localeCompare(b.sortKey);
+        });
+    }
+
+    refreshOrderIndex();
+
+    for (let pass = 0; pass < 8; pass++) {
+        for (let rowIndex = 1; rowIndex < rows.length; rowIndex++) {
+            sortRow(rows[rowIndex], 'parentUnitIds');
+            refreshOrderIndex();
+        }
+        for (let rowIndex = rows.length - 2; rowIndex >= 0; rowIndex--) {
+            sortRow(rows[rowIndex], 'childUnitIds');
+            refreshOrderIndex();
+        }
+    }
+
+    return rows;
+}
+
+function placeRowUnits(units, metrics, desiredCenters, sidePad, unitGap) {
+    const placements = new Map();
+    let cursor = sidePad;
+    const finiteDesired = [];
+
+    units.forEach(unit => {
+        const width = metrics.get(unit.id)?.width || 0;
+        const desired = desiredCenters.get(unit.id);
+        let left = cursor;
+        if (Number.isFinite(desired)) left = Math.max(cursor, desired - width / 2);
+        placements.set(unit.id, { left, width });
+        cursor = left + width + unitGap;
+        if (Number.isFinite(desired)) finiteDesired.push({ unitId: unit.id, desired });
+    });
+
+    if (finiteDesired.length) {
+        const currentAvg = finiteDesired.reduce((sum, entry) => {
+            const box = placements.get(entry.unitId);
+            return sum + box.left + box.width / 2;
+        }, 0) / finiteDesired.length;
+        const desiredAvg = finiteDesired.reduce((sum, entry) => sum + entry.desired, 0) / finiteDesired.length;
+        let shift = desiredAvg - currentAvg;
+        const minLeft = Math.min(...units.map(unit => placements.get(unit.id)?.left || 0));
+        if (minLeft + shift < sidePad) shift += sidePad - (minLeft + shift);
+        if (shift) {
+            units.forEach(unit => {
+                const box = placements.get(unit.id);
+                placements.set(unit.id, { ...box, left: box.left + shift });
+            });
+        }
+    }
+
+    return placements;
+}
+
+function computeUnitPlacements(rows, metrics, rowY, sidePad, unitGap) {
+    const placed = new Map();
+
+    function unitCenter(unitId) {
+        const box = placed.get(unitId);
+        if (!box) return null;
+        return box.x + box.width / 2;
+    }
+
+    rows.forEach(row => {
+        let cursor = sidePad;
+        row.units.forEach(unit => {
+            const width = metrics.get(unit.id)?.width || 0;
+            placed.set(unit.id, {
+                x: cursor,
+                y: rowY.get(row.depth),
+                width,
+                height: metrics.get(unit.id)?.height || 0,
+            });
+            cursor += width + unitGap;
+        });
+    });
+
+    for (let pass = 0; pass < 6; pass++) {
+        rows.forEach(row => {
+            const desiredCenters = new Map();
+            row.units.forEach(unit => {
+                const centers = unit.parentUnitIds.map(unitCenter).filter(Number.isFinite);
+                if (centers.length) {
+                    desiredCenters.set(unit.id, centers.reduce((sum, value) => sum + value, 0) / centers.length);
+                }
+            });
+
+            const placements = placeRowUnits(row.units, metrics, desiredCenters, sidePad, unitGap);
+            row.units.forEach(unit => {
+                const current = placed.get(unit.id);
+                const next = placements.get(unit.id);
+                placed.set(unit.id, { ...current, x: next.left, y: rowY.get(row.depth) });
+            });
+        });
+
+        for (let rowIndex = rows.length - 1; rowIndex >= 0; rowIndex--) {
+            const row = rows[rowIndex];
+            const desiredCenters = new Map();
+            row.units.forEach(unit => {
+                const centers = unit.childUnitIds.map(unitCenter).filter(Number.isFinite);
+                if (centers.length) {
+                    desiredCenters.set(unit.id, centers.reduce((sum, value) => sum + value, 0) / centers.length);
+                }
+            });
+
+            const placements = placeRowUnits(row.units, metrics, desiredCenters, sidePad, unitGap);
+            row.units.forEach(unit => {
+                const current = placed.get(unit.id);
+                const next = placements.get(unit.id);
+                placed.set(unit.id, { ...current, x: next.left, y: rowY.get(row.depth) });
+            });
+        }
+    }
+
+    const minLeft = Math.min(...[...placed.values()].map(box => box.x), sidePad);
+    if (minLeft < sidePad) {
+        const shift = sidePad - minLeft;
+        [...placed.entries()].forEach(([unitId, box]) => {
+            placed.set(unitId, { ...box, x: box.x + shift });
+        });
+    }
+
+    return placed;
 }
 
 function generationUnitEl(unit) {
@@ -377,6 +570,7 @@ function renderTree() {
     }
 
     const layout = buildGenerationLayout();
+    layout.rows = optimizeRowOrder(layout);
     const unitGap = 28;
     const rowGap = 64;
     const sidePad = 60;
@@ -445,83 +639,7 @@ function renderTree() {
         cursorY += maxH + rowGap;
     });
 
-    const placed = new Map();
-    const assignedUnits = new Set();
-
-    function globalAnchor(personId) {
-        const unitId = layout.personToUnitId.get(personId);
-        const box = placed.get(unitId);
-        const local = personLocalAnchors.get(personId);
-        if (!box || !local) return null;
-        return {
-            x: box.x + local.x,
-            top: box.y + local.top,
-            bottom: box.y + local.bottom,
-        };
-    }
-
-    function placeUnit(unitId, x, y) {
-        const size = metrics.get(unitId);
-        if (!size) return;
-        placed.set(unitId, { x, y, width: size.width, height: size.height });
-        assignedUnits.add(unitId);
-    }
-
-    if (layout.rows.length) {
-        let x = sidePad;
-        layout.rows[0].units.forEach(unit => {
-            placeUnit(unit.id, x, rowY.get(unit.depth));
-            x += (metrics.get(unit.id)?.width || 0) + unitGap;
-        });
-    }
-
-    for (let rowIndex = 1; rowIndex < layout.rows.length; rowIndex++) {
-        const row = layout.rows[rowIndex];
-        const rowUnitIds = new Set(row.units.map(unit => unit.id));
-        const familyBlocks = layout.families
-            .map(family => ({
-                ...family,
-                rowChildUnitIds: family.childUnitIds.filter(unitId => rowUnitIds.has(unitId)),
-            }))
-            .filter(family => family.rowChildUnitIds.length)
-            .sort((a, b) => {
-                const ax = averageParentX(a.parentIds);
-                const bx = averageParentX(b.parentIds);
-                return ax - bx;
-            });
-
-        let nextX = sidePad;
-
-        familyBlocks.forEach(block => {
-            const childUnitIds = block.rowChildUnitIds.filter(unitId => !assignedUnits.has(unitId));
-            if (!childUnitIds.length) return;
-
-            const totalWidth = childUnitIds.reduce((sum, unitId) => sum + (metrics.get(unitId)?.width || 0), 0) + unitGap * Math.max(0, childUnitIds.length - 1);
-            const parentCenter = averageParentX(block.parentIds);
-            let startX = Math.round(parentCenter - totalWidth / 2);
-            if (startX < nextX) startX = nextX;
-            if (startX < sidePad) startX = sidePad;
-
-            let x = startX;
-            childUnitIds.forEach(unitId => {
-                placeUnit(unitId, x, rowY.get(row.depth));
-                x += (metrics.get(unitId)?.width || 0) + unitGap;
-            });
-            nextX = x + unitGap;
-        });
-
-        row.units.forEach(unit => {
-            if (assignedUnits.has(unit.id)) return;
-            const desiredCenter = averageImmediateParentX(unit);
-            const width = metrics.get(unit.id)?.width || 0;
-            let x = Math.round(desiredCenter - width / 2);
-            if (!isFinite(x)) x = nextX;
-            if (x < nextX) x = nextX;
-            if (x < sidePad) x = sidePad;
-            placeUnit(unit.id, x, rowY.get(row.depth));
-            nextX = x + width + unitGap;
-        });
-    }
+    const placed = computeUnitPlacements(layout.rows, metrics, rowY, sidePad, unitGap);
 
     const allBoxes = [...placed.values()];
     const treeWidth = Math.max(...allBoxes.map(box => box.x + box.width), 0) + sidePad;
@@ -545,36 +663,6 @@ function renderTree() {
     };
     activeTreeRender();
     initZoomPan(c, inner);
-
-    function averageParentX(parentIds) {
-        const xs = parentIds.map(id => globalAnchor(id)?.x).filter(v => typeof v === 'number');
-        if (!xs.length) return nextUnplacedCenter(rowIndex);
-        return xs.reduce((sum, v) => sum + v, 0) / xs.length;
-    }
-
-    function averageImmediateParentX(unit) {
-        const xs = [];
-        unit.members.forEach(member => {
-            member.parentIds.forEach(parentId => {
-                const anchor = globalAnchor(parentId);
-                if (anchor) xs.push(anchor.x);
-            });
-        });
-        if (!xs.length) return nextUnplacedCenter(rowIndex);
-        return xs.reduce((sum, v) => sum + v, 0) / xs.length;
-    }
-
-    function nextUnplacedCenter(rowIndexValue) {
-        const rowValue = layout.rows[rowIndexValue];
-        if (!rowValue) return sidePad;
-        const alreadyPlaced = rowValue.units
-            .map(unit => placed.get(unit.id))
-            .filter(Boolean)
-            .sort((a, b) => a.x - b.x);
-        if (!alreadyPlaced.length) return sidePad;
-        const last = alreadyPlaced[alreadyPlaced.length - 1];
-        return last.x + last.width / 2 + unitGap * 2;
-    }
 }
 
 function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
