@@ -401,7 +401,97 @@ function buildGenerationLayout() {
         nodes: rowsMap.get(rowIndex).slice().sort((a, b) => a.sortKey.localeCompare(b.sortKey)),
     }));
 
+    allNodeMap.forEach(node => {
+        node.lane = 0;
+    });
+
+    applyFocusLanes({ rows, families, unitMap, familyNodeMap, allNodeMap });
+
     return { rows, families, personToUnitId, unitMap, familyNodeMap, allNodeMap, memberMap };
+}
+
+function surnameOf(member) {
+    const parts = (member?.name || '').trim().split(/\s+/);
+    return parts.length ? parts[parts.length - 1].toLowerCase() : '';
+}
+
+function familyNodeIdFromPerson(member) {
+    const ids = (member?.parentIds || []).slice().sort();
+    return ids.length ? 'junction:family:' + ids.join('|') : null;
+}
+
+function applyLane(node, lane) {
+    if (!node) return;
+    if (!node.lane) {
+        node.lane = lane;
+        return;
+    }
+    if (node.lane === lane) return;
+    if (node.lane === 0) {
+        node.lane = lane;
+        return;
+    }
+}
+
+function applyFocusLanes(layout) {
+    const candidateUnits = [...layout.unitMap.values()].filter(unit =>
+        unit.members.length === 2 &&
+        unit.members.some(member => member.parentIds.length) &&
+        unit.members.some(member => member.childrenIds.length)
+    );
+    if (!candidateUnits.length) return;
+
+    candidateUnits.sort((a, b) => {
+        const aChildren = a.members.reduce((sum, member) => sum + member.childrenIds.length, 0);
+        const bChildren = b.members.reduce((sum, member) => sum + member.childrenIds.length, 0);
+        return bChildren - aChildren;
+    });
+
+    const focusUnit = candidateUnits[0];
+    const focusMembers = focusUnit.members.slice();
+    focusMembers.sort((a, b) => {
+        const aScott = surnameOf(a).includes('scott-miller') ? -1 : 1;
+        const bScott = surnameOf(b).includes('scott-miller') ? -1 : 1;
+        if (aScott !== bScott) return aScott - bScott;
+        return (a.name || '').localeCompare(b.name || '');
+    });
+    const leftMember = focusMembers[0];
+    const rightMember = focusMembers[1] || focusMembers[0];
+
+    const leftSeedId = familyNodeIdFromPerson(leftMember);
+    const rightSeedId = familyNodeIdFromPerson(rightMember);
+    if (!leftSeedId && !rightSeedId) return;
+
+    applyLane(focusUnit, -1);
+
+    const seen = new Set();
+    function walk(startId, lane, includeFocusUnit) {
+        if (!startId) return;
+        const queue = [startId];
+        while (queue.length) {
+            const nodeId = queue.shift();
+            const visitKey = lane + ':' + nodeId;
+            if (seen.has(visitKey)) continue;
+            seen.add(visitKey);
+            const node = layout.allNodeMap.get(nodeId);
+            if (!node) continue;
+            applyLane(node, lane);
+
+            if (node.kind === 'family') {
+                node.parentNodeIds.forEach(parentId => queue.push(parentId));
+                node.childNodeIds.forEach(childId => {
+                    if (!includeFocusUnit && childId === focusUnit.id) return;
+                    queue.push(childId);
+                });
+            } else {
+                node.parentNodeIds.forEach(parentId => queue.push(parentId));
+                node.childNodeIds.forEach(childId => queue.push(childId));
+            }
+        }
+    }
+
+    walk(leftSeedId, -1, true);
+    walk(rightSeedId, 1, false);
 }
 
 function median(values) {
@@ -425,6 +515,8 @@ function optimizeRowOrder(layout) {
 
     function sortRow(row, neighborKey) {
         row.nodes.sort((a, b) => {
+            if (a.lane !== b.lane) return a.lane - b.lane;
+
             const aNeighbors = a[neighborKey]
                 .map(nodeId => orderIndex.get(nodeId))
                 .filter(index => typeof index === 'number');
@@ -467,6 +559,7 @@ function placeRowUnits(units, metrics, desiredCenters, sidePad, unitGap) {
     const placements = new Map();
     let cursor = sidePad;
     const finiteDesired = [];
+    const laneGap = 120;
 
     units.forEach(unit => {
         const metric = metrics.get(unit.id) || { width: 0, anchorOffset: 0 };
@@ -474,7 +567,11 @@ function placeRowUnits(units, metrics, desiredCenters, sidePad, unitGap) {
         const anchorOffset = Number.isFinite(metric.anchorOffset) ? metric.anchorOffset : width / 2;
         const desired = desiredCenters.get(unit.id);
         let left = cursor;
-        if (Number.isFinite(desired)) left = Math.max(cursor, desired - anchorOffset);
+        if (placements.size) {
+            const prevUnit = units[placements.size - 1];
+            if ((prevUnit.lane || 0) !== (unit.lane || 0)) left += laneGap;
+        }
+        if (Number.isFinite(desired)) left = Math.max(left, desired - anchorOffset);
         placements.set(unit.id, { left, width, anchorOffset });
         cursor = left + width + unitGap;
         if (Number.isFinite(desired)) finiteDesired.push({ unitId: unit.id, desired });
