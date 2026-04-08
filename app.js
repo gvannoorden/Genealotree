@@ -309,6 +309,7 @@ function buildGenerationLayout() {
             depth: personDepth.get(member.id) || 0,
             members: people,
             sortKey: people.map(p => (p.dob || '9999-12-31') + '|' + p.name).join('||'),
+            anchorPersonIds: [],
         };
 
         unitMap.set(unitId, unit);
@@ -316,22 +317,14 @@ function buildGenerationLayout() {
     });
 
     [...unitMap.values()].forEach(unit => {
-        unit.parentUnitIds = [];
-        unit.childUnitIds = [];
-        unit.parentFamilyIds = [];
-        unit.childFamilyIds = [];
+        unit.kind = 'unit';
+        unit.parentNodeIds = [];
+        unit.childNodeIds = [];
+        unit.anchorPersonIds = unit.members
+            .filter(person => person.parentIds.length || person.childrenIds.length)
+            .map(person => person.id);
+        if (!unit.anchorPersonIds.length) unit.anchorPersonIds = unit.members.map(person => person.id);
     });
-
-    const rowsMap = new Map();
-    [...unitMap.values()].forEach(unit => {
-        if (!rowsMap.has(unit.depth)) rowsMap.set(unit.depth, []);
-        rowsMap.get(unit.depth).push(unit);
-    });
-
-    const rows = [...rowsMap.keys()].sort((a, b) => a - b).map(depth => ({
-        depth,
-        units: rowsMap.get(depth).slice().sort((a, b) => a.sortKey.localeCompare(b.sortKey)),
-    }));
 
     const familiesMap = new Map();
     members.forEach(child => {
@@ -351,27 +344,64 @@ function buildGenerationLayout() {
         parentUnitIds: [...new Set(family.parentIds.map(id => personToUnitId.get(id)).filter(Boolean))],
     }));
 
+    const familyNodeMap = new Map();
     families.forEach(family => {
+        const parentDepth = Math.max(...family.parentUnitIds.map(unitId => unitMap.get(unitId)?.depth || 0), 0);
+        const childDepth = Math.max(parentDepth + 1, ...family.childUnitIds.map(unitId => unitMap.get(unitId)?.depth || 0));
+        const nodeId = 'junction:' + family.id;
+        const familyNode = {
+            id: nodeId,
+            kind: 'family',
+            familyId: family.id,
+            parentUnitIds: family.parentUnitIds.slice(),
+            childUnitIds: family.childUnitIds.slice(),
+            rowIndex: parentDepth * 2 + 1,
+            depth: parentDepth,
+            sortKey: family.parentIds.join('|') + '->' + family.childIds.join('|'),
+            parentNodeIds: family.parentUnitIds.slice(),
+            childNodeIds: family.childUnitIds.slice(),
+        };
+        family.rowIndex = familyNode.rowIndex;
+        family.childDepth = childDepth;
+        family.nodeId = nodeId;
+        familyNodeMap.set(nodeId, familyNode);
+
         family.parentUnitIds.forEach(unitId => {
             const unit = unitMap.get(unitId);
-            if (!unit) return;
-            unit.childFamilyIds.push(family.id);
-            family.childUnitIds.forEach(childUnitId => {
-                if (!unit.childUnitIds.includes(childUnitId)) unit.childUnitIds.push(childUnitId);
-            });
+            if (unit && !unit.childNodeIds.includes(nodeId)) unit.childNodeIds.push(nodeId);
         });
 
         family.childUnitIds.forEach(unitId => {
             const unit = unitMap.get(unitId);
-            if (!unit) return;
-            unit.parentFamilyIds.push(family.id);
-            family.parentUnitIds.forEach(parentUnitId => {
-                if (!unit.parentUnitIds.includes(parentUnitId)) unit.parentUnitIds.push(parentUnitId);
-            });
+            if (unit && !unit.parentNodeIds.includes(nodeId)) unit.parentNodeIds.push(nodeId);
         });
     });
 
-    return { rows, families, personToUnitId, unitMap, memberMap };
+    const allNodeMap = new Map([
+        ...[...unitMap.entries()],
+        ...[...familyNodeMap.entries()],
+    ]);
+
+    const rowsMap = new Map();
+    [...unitMap.values()].forEach(unit => {
+        const rowIndex = unit.depth * 2;
+        unit.rowIndex = rowIndex;
+        if (!rowsMap.has(rowIndex)) rowsMap.set(rowIndex, []);
+        rowsMap.get(rowIndex).push(unit);
+    });
+    [...familyNodeMap.values()].forEach(node => {
+        if (!rowsMap.has(node.rowIndex)) rowsMap.set(node.rowIndex, []);
+        rowsMap.get(node.rowIndex).push(node);
+    });
+
+    const rows = [...rowsMap.keys()].sort((a, b) => a - b).map(rowIndex => ({
+        rowIndex,
+        depth: rowIndex / 2,
+        kind: rowIndex % 2 === 0 ? 'units' : 'families',
+        nodes: rowsMap.get(rowIndex).slice().sort((a, b) => a.sortKey.localeCompare(b.sortKey)),
+    }));
+
+    return { rows, families, personToUnitId, unitMap, familyNodeMap, allNodeMap, memberMap };
 }
 
 function median(values) {
@@ -382,24 +412,24 @@ function median(values) {
 }
 
 function optimizeRowOrder(layout) {
-    const rows = layout.rows.map(row => ({ ...row, units: row.units.slice() }));
+    const rows = layout.rows.map(row => ({ ...row, nodes: row.nodes.slice() }));
     const orderIndex = new Map();
 
     function refreshOrderIndex() {
         rows.forEach(row => {
-            row.units.forEach((unit, index) => {
-                orderIndex.set(unit.id, index);
+            row.nodes.forEach((node, index) => {
+                orderIndex.set(node.id, index);
             });
         });
     }
 
     function sortRow(row, neighborKey) {
-        row.units.sort((a, b) => {
+        row.nodes.sort((a, b) => {
             const aNeighbors = a[neighborKey]
-                .map(unitId => orderIndex.get(unitId))
+                .map(nodeId => orderIndex.get(nodeId))
                 .filter(index => typeof index === 'number');
             const bNeighbors = b[neighborKey]
-                .map(unitId => orderIndex.get(unitId))
+                .map(nodeId => orderIndex.get(nodeId))
                 .filter(index => typeof index === 'number');
 
             const aMedian = median(aNeighbors);
@@ -421,11 +451,11 @@ function optimizeRowOrder(layout) {
 
     for (let pass = 0; pass < 8; pass++) {
         for (let rowIndex = 1; rowIndex < rows.length; rowIndex++) {
-            sortRow(rows[rowIndex], 'parentUnitIds');
+            sortRow(rows[rowIndex], 'parentNodeIds');
             refreshOrderIndex();
         }
         for (let rowIndex = rows.length - 2; rowIndex >= 0; rowIndex--) {
-            sortRow(rows[rowIndex], 'childUnitIds');
+            sortRow(rows[rowIndex], 'childNodeIds');
             refreshOrderIndex();
         }
     }
@@ -439,11 +469,13 @@ function placeRowUnits(units, metrics, desiredCenters, sidePad, unitGap) {
     const finiteDesired = [];
 
     units.forEach(unit => {
-        const width = metrics.get(unit.id)?.width || 0;
+        const metric = metrics.get(unit.id) || { width: 0, anchorOffset: 0 };
+        const width = metric.width || 0;
+        const anchorOffset = Number.isFinite(metric.anchorOffset) ? metric.anchorOffset : width / 2;
         const desired = desiredCenters.get(unit.id);
         let left = cursor;
-        if (Number.isFinite(desired)) left = Math.max(cursor, desired - width / 2);
-        placements.set(unit.id, { left, width });
+        if (Number.isFinite(desired)) left = Math.max(cursor, desired - anchorOffset);
+        placements.set(unit.id, { left, width, anchorOffset });
         cursor = left + width + unitGap;
         if (Number.isFinite(desired)) finiteDesired.push({ unitId: unit.id, desired });
     });
@@ -451,7 +483,7 @@ function placeRowUnits(units, metrics, desiredCenters, sidePad, unitGap) {
     if (finiteDesired.length) {
         const currentAvg = finiteDesired.reduce((sum, entry) => {
             const box = placements.get(entry.unitId);
-            return sum + box.left + box.width / 2;
+            return sum + box.left + box.anchorOffset;
         }, 0) / finiteDesired.length;
         const desiredAvg = finiteDesired.reduce((sum, entry) => sum + entry.desired, 0) / finiteDesired.length;
         let shift = desiredAvg - currentAvg;
@@ -468,24 +500,27 @@ function placeRowUnits(units, metrics, desiredCenters, sidePad, unitGap) {
     return placements;
 }
 
-function computeUnitPlacements(rows, metrics, rowY, sidePad, unitGap) {
+function computeNodePlacements(rows, metrics, rowY, sidePad, unitGap) {
     const placed = new Map();
 
-    function unitCenter(unitId) {
-        const box = placed.get(unitId);
+    function nodeCenter(nodeId) {
+        const box = placed.get(nodeId);
         if (!box) return null;
-        return box.x + box.width / 2;
+        const metric = metrics.get(nodeId);
+        const anchorOffset = Number.isFinite(metric?.anchorOffset) ? metric.anchorOffset : box.width / 2;
+        return box.x + anchorOffset;
     }
 
     rows.forEach(row => {
         let cursor = sidePad;
-        row.units.forEach(unit => {
-            const width = metrics.get(unit.id)?.width || 0;
-            placed.set(unit.id, {
+        row.nodes.forEach(node => {
+            const metric = metrics.get(node.id) || { width: 0, height: 0 };
+            const width = metric.width || 0;
+            placed.set(node.id, {
                 x: cursor,
-                y: rowY.get(row.depth),
+                y: rowY.get(row.rowIndex),
                 width,
-                height: metrics.get(unit.id)?.height || 0,
+                height: metric.height || 0,
             });
             cursor += width + unitGap;
         });
@@ -494,36 +529,36 @@ function computeUnitPlacements(rows, metrics, rowY, sidePad, unitGap) {
     for (let pass = 0; pass < 6; pass++) {
         rows.forEach(row => {
             const desiredCenters = new Map();
-            row.units.forEach(unit => {
-                const centers = unit.parentUnitIds.map(unitCenter).filter(Number.isFinite);
+            row.nodes.forEach(node => {
+                const centers = node.parentNodeIds.map(nodeCenter).filter(Number.isFinite);
                 if (centers.length) {
-                    desiredCenters.set(unit.id, centers.reduce((sum, value) => sum + value, 0) / centers.length);
+                    desiredCenters.set(node.id, centers.reduce((sum, value) => sum + value, 0) / centers.length);
                 }
             });
 
-            const placements = placeRowUnits(row.units, metrics, desiredCenters, sidePad, unitGap);
-            row.units.forEach(unit => {
-                const current = placed.get(unit.id);
-                const next = placements.get(unit.id);
-                placed.set(unit.id, { ...current, x: next.left, y: rowY.get(row.depth) });
+            const placements = placeRowUnits(row.nodes, metrics, desiredCenters, sidePad, unitGap);
+            row.nodes.forEach(node => {
+                const current = placed.get(node.id);
+                const next = placements.get(node.id);
+                placed.set(node.id, { ...current, x: next.left, y: rowY.get(row.rowIndex) });
             });
         });
 
         for (let rowIndex = rows.length - 1; rowIndex >= 0; rowIndex--) {
             const row = rows[rowIndex];
             const desiredCenters = new Map();
-            row.units.forEach(unit => {
-                const centers = unit.childUnitIds.map(unitCenter).filter(Number.isFinite);
+            row.nodes.forEach(node => {
+                const centers = node.childNodeIds.map(nodeCenter).filter(Number.isFinite);
                 if (centers.length) {
-                    desiredCenters.set(unit.id, centers.reduce((sum, value) => sum + value, 0) / centers.length);
+                    desiredCenters.set(node.id, centers.reduce((sum, value) => sum + value, 0) / centers.length);
                 }
             });
 
-            const placements = placeRowUnits(row.units, metrics, desiredCenters, sidePad, unitGap);
-            row.units.forEach(unit => {
-                const current = placed.get(unit.id);
-                const next = placements.get(unit.id);
-                placed.set(unit.id, { ...current, x: next.left, y: rowY.get(row.depth) });
+            const placements = placeRowUnits(row.nodes, metrics, desiredCenters, sidePad, unitGap);
+            row.nodes.forEach(node => {
+                const current = placed.get(node.id);
+                const next = placements.get(node.id);
+                placed.set(node.id, { ...current, x: next.left, y: rowY.get(row.rowIndex) });
             });
         }
     }
@@ -531,8 +566,8 @@ function computeUnitPlacements(rows, metrics, rowY, sidePad, unitGap) {
     const minLeft = Math.min(...[...placed.values()].map(box => box.x), sidePad);
     if (minLeft < sidePad) {
         const shift = sidePad - minLeft;
-        [...placed.entries()].forEach(([unitId, box]) => {
-            placed.set(unitId, { ...box, x: box.x + shift });
+        [...placed.entries()].forEach(([nodeId, box]) => {
+            placed.set(nodeId, { ...box, x: box.x + shift });
         });
     }
 
@@ -572,7 +607,8 @@ function renderTree() {
     const layout = buildGenerationLayout();
     layout.rows = optimizeRowOrder(layout);
     const unitGap = 28;
-    const rowGap = 64;
+    const rowGap = 78;
+    const familyRowGap = 28;
     const sidePad = 60;
     const topPad = 20;
     const bottomPad = 60;
@@ -598,14 +634,15 @@ function renderTree() {
 
     const unitEls = new Map();
     layout.rows.forEach(row => {
-        row.units.forEach(unit => {
-            const el = generationUnitEl(unit);
+        row.nodes.forEach(node => {
+            if (node.kind !== 'unit') return;
+            const el = generationUnitEl(node);
             el.style.position = 'absolute';
             el.style.left = '0px';
             el.style.top = '0px';
             el.style.visibility = 'hidden';
             tree.appendChild(el);
-            unitEls.set(unit.id, el);
+            unitEls.set(node.id, el);
         });
     });
 
@@ -615,31 +652,41 @@ function renderTree() {
     const metrics = new Map();
     const personLocalAnchors = new Map();
     layout.rows.forEach(row => {
-        row.units.forEach(unit => {
-            const el = unitEls.get(unit.id);
-            metrics.set(unit.id, {
-                width: el.offsetWidth || 0,
-                height: el.offsetHeight || 0,
-            });
-            el.querySelectorAll('.person-node[data-person-id]').forEach(node => {
-                personLocalAnchors.set(node.dataset.personId, {
-                    x: node.offsetLeft + node.offsetWidth / 2,
-                    top: node.offsetTop,
-                    bottom: node.offsetTop + node.offsetHeight,
+        row.nodes.forEach(layoutNode => {
+            if (layoutNode.kind === 'unit') {
+                const el = unitEls.get(layoutNode.id);
+                const anchorOffsets = layoutNode.anchorPersonIds
+                    .map(personId => personLocalAnchors.get(personId)?.x)
+                    .filter(Number.isFinite);
+                metrics.set(layoutNode.id, {
+                    width: el.offsetWidth || 0,
+                    height: el.offsetHeight || 0,
+                    anchorOffset: anchorOffsets.length
+                        ? anchorOffsets.reduce((sum, value) => sum + value, 0) / anchorOffsets.length
+                        : (el.offsetWidth || 0) / 2,
                 });
-            });
+                el.querySelectorAll('.person-node[data-person-id]').forEach(node => {
+                    personLocalAnchors.set(node.dataset.personId, {
+                        x: node.offsetLeft + node.offsetWidth / 2,
+                        top: node.offsetTop,
+                        bottom: node.offsetTop + node.offsetHeight,
+                    });
+                });
+            } else {
+                metrics.set(layoutNode.id, { width: 24, height: 16, anchorOffset: 12 });
+            }
         });
     });
 
     const rowY = new Map();
     let cursorY = topPad;
     layout.rows.forEach(row => {
-        const maxH = Math.max(...row.units.map(unit => metrics.get(unit.id)?.height || 0), 0);
-        rowY.set(row.depth, cursorY);
-        cursorY += maxH + rowGap;
+        const maxH = Math.max(...row.nodes.map(node => metrics.get(node.id)?.height || 0), 0);
+        rowY.set(row.rowIndex, cursorY);
+        cursorY += maxH + (row.kind === 'units' ? familyRowGap : rowGap);
     });
 
-    const placed = computeUnitPlacements(layout.rows, metrics, rowY, sidePad, unitGap);
+    const placed = computeNodePlacements(layout.rows, metrics, rowY, sidePad, unitGap);
 
     const allBoxes = [...placed.values()];
     const treeWidth = Math.max(...allBoxes.map(box => box.x + box.width), 0) + sidePad;
@@ -648,9 +695,10 @@ function renderTree() {
     tree.style.height = treeHeight + 'px';
 
     layout.rows.forEach(row => {
-        row.units.forEach(unit => {
-            const el = unitEls.get(unit.id);
-            const box = placed.get(unit.id);
+        row.nodes.forEach(node => {
+            if (node.kind !== 'unit') return;
+            const el = unitEls.get(node.id);
+            const box = placed.get(node.id);
             if (!el || !box) return;
             el.style.left = box.x + 'px';
             el.style.top = box.y + 'px';
@@ -705,37 +753,30 @@ function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
     layout.families.forEach(family => {
         const parents = family.parentIds.map(anchorFor).filter(Boolean).sort((a, b) => a.x - b.x);
         const children = family.childIds.map(anchorFor).filter(Boolean).sort((a, b) => a.x - b.x);
-        if (!parents.length || !children.length) return;
+        const junctionBox = placed.get(family.nodeId);
+        if (!parents.length || !children.length || !junctionBox) return;
 
+        const junctionX = junctionBox.x + junctionBox.width / 2;
+        const junctionY = junctionBox.y + junctionBox.height / 2;
         const parentBottom = Math.max(...parents.map(parent => parent.bottom));
         const childTop = Math.min(...children.map(child => child.top));
-        const gap = childTop - parentBottom;
-        if (gap <= 16) return;
+        if (childTop <= junctionY) return;
 
-        const coupleStemY = parentBottom + Math.max(10, Math.min(18, Math.round(gap * 0.16)));
-        const childBusY = childTop - Math.max(18, Math.min(28, Math.round(gap * 0.25)));
-        const childCenter = children.reduce((sum, child) => sum + child.x, 0) / children.length;
-
-        let trunkX;
-        if (parents.length >= 2) {
-            const leftX = parents[0].x;
-            const rightX = parents[parents.length - 1].x;
-            trunkX = Math.max(leftX, Math.min(rightX, childCenter));
-            parents.forEach(parent => addLine(parent.x, parent.bottom, parent.x, coupleStemY));
-            addLine(leftX, coupleStemY, rightX, coupleStemY);
-        } else {
-            trunkX = parents[0].x;
-            addLine(trunkX, parents[0].bottom, trunkX, coupleStemY);
-        }
-
-        addLine(trunkX, coupleStemY, trunkX, childBusY);
-
+        const parentLeft = Math.min(...parents.map(parent => parent.x));
+        const parentRight = Math.max(...parents.map(parent => parent.x));
+        const parentBusX = parents.length > 1 ? Math.max(parentLeft, Math.min(parentRight, junctionX)) : parents[0].x;
+        const childBusY = junctionY + Math.max(18, Math.min(30, Math.round((childTop - junctionY) * 0.45)));
         const childLeft = Math.min(...children.map(child => child.x));
         const childRight = Math.max(...children.map(child => child.x));
+
+        parents.forEach(parent => addLine(parent.x, parent.bottom, parent.x, junctionY));
+        if (parents.length > 1) addLine(parentLeft, junctionY, parentRight, junctionY);
+        if (parentBusX !== junctionX) addLine(parentBusX, junctionY, junctionX, junctionY);
+        addLine(junctionX, junctionY, junctionX, childBusY);
         if (children.length > 1) addLine(childLeft, childBusY, childRight, childBusY);
         children.forEach(child => {
-            const startY = children.length > 1 ? childBusY : coupleStemY;
-            const startX = children.length > 1 ? child.x : trunkX;
+            const startX = children.length > 1 ? child.x : junctionX;
+            const startY = children.length > 1 ? childBusY : junctionY;
             addLine(startX, startY, child.x, child.top);
         });
     });
