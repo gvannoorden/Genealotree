@@ -794,14 +794,26 @@ function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
 
     layout.families.forEach(family => {
         const parents = family.parentIds.map(anchorFor).filter(Boolean).sort((a, b) => a.x - b.x);
-        const children = family.childIds.map(anchorFor).filter(Boolean).sort((a, b) => a.x - b.x);
         const junctionBox = placed.get(family.nodeId);
-        if (!parents.length || !children.length || !junctionBox) return;
+        if (!parents.length || !junctionBox) return;
+
+        const childEntries = family.childIds.map(personId => {
+            const anchor = anchorFor(personId);
+            const unitId = layout.personToUnitId.get(personId);
+            const unit = layout.unitMap.get(unitId);
+            return anchor ? {
+                personId,
+                unitId,
+                anchor,
+                isBridge: (unit?.parentNodeIds?.length || 0) > 1,
+            } : null;
+        }).filter(Boolean).sort((a, b) => a.anchor.x - b.anchor.x);
+        if (!childEntries.length) return;
 
         const junctionX = junctionBox.x + junctionBox.width / 2;
         const junctionY = junctionBox.y + junctionBox.height / 2;
         const parentBottom = Math.max(...parents.map(parent => parent.bottom));
-        const childTop = Math.min(...children.map(child => child.top));
+        const childTop = Math.min(...childEntries.map(entry => entry.anchor.top));
         if (childTop <= junctionY) return;
 
         const laneIndex = familyLaneIndex.get(family.id) || 0;
@@ -824,8 +836,10 @@ function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
         const parentLeft = Math.min(...parents.map(parent => parent.x));
         const parentRight = Math.max(...parents.map(parent => parent.x));
         const parentBusX = parents.length > 1 ? Math.max(parentLeft, Math.min(parentRight, junctionX)) : parents[0].x;
-        const childLeft = Math.min(...children.map(child => child.x));
-        const childRight = Math.max(...children.map(child => child.x));
+        const regularChildren = childEntries.filter(entry => !entry.isBridge);
+        const bridgeChildren = childEntries.filter(entry => entry.isBridge);
+        const childLeft = regularChildren.length ? Math.min(...regularChildren.map(entry => entry.anchor.x)) : null;
+        const childRight = regularChildren.length ? Math.max(...regularChildren.map(entry => entry.anchor.x)) : null;
 
         parents.forEach(parent => addOrthogonalPath([
             { x: parent.x, y: parent.bottom },
@@ -841,16 +855,34 @@ function drawFamilyConnectors(treeEl, layout, placed, personLocalAnchors) {
             { x: junctionX, y: junctionY },
             { x: junctionX, y: childBusY },
         ]);
-        if (children.length > 1) addOrthogonalPath([
+
+        if (regularChildren.length > 1 && childLeft != null && childRight != null) addOrthogonalPath([
             { x: childLeft, y: childBusY },
             { x: childRight, y: childBusY },
         ]);
-        children.forEach(child => {
-            const startX = children.length > 1 ? child.x : junctionX;
-            const startY = children.length > 1 ? childBusY : junctionY;
+
+        regularChildren.forEach(entry => {
+            const child = entry.anchor;
+            const startX = regularChildren.length > 1 ? child.x : junctionX;
+            const startY = regularChildren.length > 1 ? childBusY : junctionY;
             addOrthogonalPath([
                 { x: startX, y: startY },
                 { x: child.x, y: startY },
+                { x: child.x, y: child.top },
+            ]);
+        });
+
+        bridgeChildren.forEach((entry, index) => {
+            const child = entry.anchor;
+            const bridgeLaneY = clamp(
+                junctionY + 14 + index * 16,
+                junctionY + 10,
+                child.top - 10
+            );
+            addOrthogonalPath([
+                { x: junctionX, y: junctionY },
+                { x: junctionX, y: bridgeLaneY },
+                { x: child.x, y: bridgeLaneY },
                 { x: child.x, y: child.top },
             ]);
         });
