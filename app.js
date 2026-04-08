@@ -202,6 +202,14 @@ function resetTreeCamera() {
     if (inner) inner.style.transform = 'translate(0px,0px) scale(0.92)';
 }
 
+function resetFocusTree() {
+    const defaultId = getDefaultFocusId();
+    if (!defaultId) return;
+    state.focusedId = defaultId;
+    if (state.currentView === 'tree') renderTree();
+    resetTreeCamera();
+}
+
 function setFocusedPerson(id, openDetail = true) {
     if (!getMember(id)) return;
     state.focusedId = id;
@@ -909,6 +917,22 @@ function maxDepth(nodes) {
     return Math.max(...nodes.map(node => Math.max(node.depth, maxDepth(node.children))));
 }
 
+function estimatePlatformHeight(node) {
+    const base = node.type === 'root' ? 118 : 104;
+    const personRows = node.members.length * 74;
+    const bundleRows = node.bundle.visible.length ? 58 + Math.ceil(node.bundle.visible.length / 2) * 34 : 0;
+    return base + personRows + bundleRows;
+}
+
+function collectDepthHeights(nodes, sizeOf, map = new Map()) {
+    nodes.forEach(node => {
+        const current = map.get(node.depth) || 0;
+        map.set(node.depth, Math.max(current, sizeOf(node).height));
+        collectDepthHeights(node.children, sizeOf, map);
+    });
+    return map;
+}
+
 function subtreeWidth(node, sizeOf, gap) {
     const own = sizeOf(node).width;
     if (!node.children.length) {
@@ -934,13 +958,13 @@ function forestWidth(roots, sizeOf, gap, forestGap) {
     return widths.reduce((sum, width) => sum + width, 0) + forestGap * (widths.length - 1);
 }
 
-function collectPositions(node, positions, edges, sizeOf, centerX, y, rowGap, direction) {
+function collectPositions(node, positions, edges, sizeOf, centerX, y, nextYForDepth, direction) {
     const size = sizeOf(node);
     positions.set(node.id, { x: centerX - size.width / 2, y, width: size.width, height: size.height, node });
     node.children.forEach((child, index) => {
         const childCenterX = centerX - node._subtreeWidth / 2 + node._childOffsets[index];
-        const childY = y + direction * rowGap;
-        collectPositions(child, positions, edges, sizeOf, childCenterX, childY, rowGap, direction);
+        const childY = nextYForDepth(child.depth);
+        collectPositions(child, positions, edges, sizeOf, childCenterX, childY, nextYForDepth, direction);
         edges.push({
             from: direction > 0 ? node.id : child.id,
             to: direction > 0 ? child.id : node.id,
@@ -962,8 +986,11 @@ function createPlatformEl(node) {
     const people = document.createElement('div');
     people.className = 'focus-platform-people';
     node.members.forEach(member => {
+        const row = document.createElement('div');
+        row.className = 'focus-person-row' + (member.id === state.focusedId ? ' is-focused' : '');
+
         const person = document.createElement('button');
-        person.className = 'focus-person-chip' + (member.id === state.focusedId ? ' is-focused' : '');
+        person.className = 'focus-person-chip';
         person.type = 'button';
         person.innerHTML =
             '<span class="focus-person-photo">' + photoEl(member.photo) + '</span>' +
@@ -972,9 +999,22 @@ function createPlatformEl(node) {
             '</small></span>';
         person.onclick = e => {
             e.stopPropagation();
-            focusAndShow(member.id);
+            setFocusedPerson(member.id, false);
         };
-        people.appendChild(person);
+
+        const menu = document.createElement('button');
+        menu.className = 'focus-chip-menu';
+        menu.type = 'button';
+        menu.textContent = '...';
+        menu.setAttribute('aria-label', 'Open details for ' + member.name);
+        menu.onclick = e => {
+            e.stopPropagation();
+            showDetail(member.id);
+        };
+
+        row.appendChild(person);
+        row.appendChild(menu);
+        people.appendChild(row);
     });
     card.appendChild(people);
 
@@ -1055,20 +1095,25 @@ function renderTree() {
     const model = buildFocusedTreeModel();
     if (!model) return;
 
-    const sizes = {
-        root: { width: 360, height: 190 },
-        ancestor: { width: 280, height: 180 },
-        descendant: { width: 280, height: 168 },
-    };
-    const sizeOf = node => sizes[node.type] || sizes.descendant;
+    const sizeOf = node => ({
+        width: node.type === 'root' ? 360 : 280,
+        height: estimatePlatformHeight(node),
+    });
     const branchGap = 56;
     const forestGap = 76;
-    const rowGap = 230;
+    const rowGap = 74;
     const sidePad = 80;
     const topPad = 48;
     const bottomPad = 80;
     const ancestorDepth = maxDepth(model.ancestorRoots);
     const descendantDepth = maxDepth(model.descendantRoots);
+    const ancestorHeights = collectDepthHeights(model.ancestorRoots, sizeOf);
+    const descendantHeights = collectDepthHeights(model.descendantRoots, sizeOf);
+    const rootHeight = sizeOf(model.root).height;
+    const ancestorTotalHeight = Array.from({ length: ancestorDepth }, (_, idx) => {
+        const depth = ancestorDepth - idx;
+        return (ancestorHeights.get(depth) || 0) + rowGap;
+    }).reduce((sum, value) => sum + value, 0);
 
     const zc = document.createElement('div');
     zc.className = 'zoom-controls';
@@ -1079,8 +1124,8 @@ function renderTree() {
     toolbar.className = 'focus-toolbar';
     const focusMember = getMember(state.focusedId);
     toolbar.innerHTML =
-        '<div class="focus-toolbar-copy"><span class="focus-toolbar-kicker">Focused Tree</span><strong>' + esc(focusMember?.name || 'Family') + '</strong><small>Click any person chip to recenter the tree from their perspective.</small></div>' +
-        '<button class="btn btn-sm btn-outline" onclick="treeZoomReset()">Recenter View</button>';
+        '<div class="focus-toolbar-copy"><span class="focus-toolbar-kicker">Focused Tree</span><strong>' + esc(focusMember?.name || 'Family') + '</strong><small>Click a person chip to recenter the tree. Use the three-dot button for details.</small></div>' +
+        '<div class="focus-toolbar-actions"><button class="btn btn-sm btn-outline" onclick="resetFocusTree()">Reset Focus</button><button class="btn btn-sm btn-outline" onclick="treeZoomReset()">Recenter View</button></div>';
     c.appendChild(toolbar);
 
     const inner = document.createElement('div');
@@ -1099,9 +1144,26 @@ function renderTree() {
     const descendantWidth = forestWidth(model.descendantRoots, sizeOf, branchGap, forestGap);
     const treeWidth = Math.max(rootWidth, ancestorWidth, descendantWidth) + sidePad * 2;
     const rootCenterX = treeWidth / 2;
-    const rootY = topPad + ancestorDepth * rowGap;
+    const rootY = topPad + ancestorTotalHeight;
     const positions = new Map();
     const edges = [];
+
+    function ancestorY(depth) {
+        let y = rootY;
+        for (let level = 1; level <= depth; level++) {
+            y -= rowGap + (ancestorHeights.get(level) || 0);
+        }
+        return y;
+    }
+
+    function descendantY(depth) {
+        let y = rootY + rootHeight;
+        for (let level = 1; level <= depth; level++) {
+            y += rowGap;
+            if (level < depth) y += descendantHeights.get(level) || 0;
+        }
+        return y;
+    }
 
     const rootSize = sizeOf(model.root);
     positions.set(model.root.id, {
@@ -1117,7 +1179,7 @@ function renderTree() {
     model.ancestorRoots.forEach(root => {
         const width = root._subtreeWidth || subtreeWidth(root, sizeOf, branchGap);
         const centerX = ancestorCursor + width / 2;
-        collectPositions(root, positions, edges, sizeOf, centerX, rootY - rowGap, rowGap, -1);
+        collectPositions(root, positions, edges, sizeOf, centerX, ancestorY(root.depth), ancestorY, -1);
         edges.push({ from: root.id, to: model.root.id });
         ancestorCursor += width + forestGap;
     });
@@ -1127,12 +1189,16 @@ function renderTree() {
     model.descendantRoots.forEach(root => {
         const width = root._subtreeWidth || subtreeWidth(root, sizeOf, branchGap);
         const centerX = descendantCursor + width / 2;
-        collectPositions(root, positions, edges, sizeOf, centerX, rootY + rowGap, rowGap, 1);
+        collectPositions(root, positions, edges, sizeOf, centerX, descendantY(root.depth), descendantY, 1);
         edges.push({ from: model.root.id, to: root.id });
         descendantCursor += width + forestGap;
     });
 
-    const treeHeight = rootY + (descendantDepth + 1) * rowGap + bottomPad;
+    const descendantTotalHeight = Array.from({ length: descendantDepth }, (_, idx) => {
+        const depth = idx + 1;
+        return rowGap + (descendantHeights.get(depth) || 0);
+    }).reduce((sum, value) => sum + value, 0);
+    const treeHeight = rootY + rootHeight + descendantTotalHeight + bottomPad;
     tree.style.width = treeWidth + 'px';
     tree.style.height = treeHeight + 'px';
 
