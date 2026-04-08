@@ -293,24 +293,7 @@
             align-items: stretch;
             gap: 8px;
             margin-top: 6px;
-            padding: 10px;
-            width: 160px;
-            border-radius: 16px;
-            background: rgba(255,255,255,0.82);
-            backdrop-filter: blur(14px);
-            box-shadow: 0 8px 26px rgba(74,66,56,0.08);
-        }
-        .focus-toolbar-name {
-            font-size: 0.82rem;
-            font-weight: 800;
-            line-height: 1.25;
-            text-align: center;
-        }
-        .focus-toolbar-actions {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
+            width: 36px;
         }
         .focus-tree {
             position: relative;
@@ -329,7 +312,7 @@
             box-shadow: 0 22px 54px rgba(229,184,58,0.16);
         }
         .focus-platform-ancestor {
-            background: linear-gradient(145deg, rgba(255,255,255,0.96), var(--ancestor-tint, rgba(212,231,197,0.92)));
+            background: var(--platform-gradient, linear-gradient(145deg, rgba(255,255,255,0.96), rgba(212,231,197,0.92)));
         }
         .focus-platform-descendant {
             background: linear-gradient(145deg, rgba(255,255,255,0.96), rgba(232,224,240,0.9));
@@ -408,6 +391,26 @@
             box-shadow: 0 10px 24px rgba(74,66,56,0.1);
             background: white;
         }
+        .focus-icon-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid #eee;
+            background: white;
+            font-size: 1rem;
+            font-weight: 800;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            transition: all 0.2s;
+            color: var(--text);
+        }
+        .focus-icon-btn:hover {
+            border-color: var(--primary);
+            background: var(--primary-light);
+        }
         .focus-person-photo {
             width: 50px;
             height: 50px;
@@ -481,10 +484,7 @@
             .node-photo { width: 52px; height: 52px; }
             #tree-container { padding: 104px 16px 24px; }
             .focus-toolbar {
-                width: 148px;
-            }
-            .focus-toolbar-actions {
-                width: 100%;
+                width: 36px;
             }
         }
     </style>

@@ -933,6 +933,13 @@ function collectDepthHeights(nodes, sizeOf, map = new Map()) {
     return map;
 }
 
+function ancestorGradientForDepth(depth) {
+    if (depth <= 1) return 'linear-gradient(145deg, rgba(255,255,255,0.96), rgba(212,231,197,0.92))';
+    if (depth === 2) return 'linear-gradient(145deg, rgba(210,232,192,0.97), rgba(140,185,112,0.95))';
+    if (depth === 3) return 'linear-gradient(145deg, rgba(160,205,135,0.97), rgba(90,148,72,0.95))';
+    return 'linear-gradient(145deg, rgba(60,105,50,0.98), rgba(28,62,24,0.98))';
+}
+
 function subtreeWidth(node, sizeOf, gap) {
     const own = sizeOf(node).width;
     if (!node.children.length) {
@@ -979,8 +986,7 @@ function createPlatformEl(node) {
     card.dataset.depth = String(node.depth || 0);
 
     if (node.type === 'ancestor') {
-        const tintStrength = Math.min(0.24, 0.09 + Math.max(0, node.depth - 1) * 0.035);
-        card.style.setProperty('--ancestor-tint', 'rgba(188, 214, 170, ' + tintStrength.toFixed(3) + ')');
+        card.style.setProperty('--platform-gradient', ancestorGradientForDepth(node.depth || 1));
     }
 
     const header = document.createElement('div');
@@ -1130,9 +1136,8 @@ function renderTree() {
     const toolbar = document.createElement('div');
     toolbar.className = 'focus-toolbar';
     toolbar.innerHTML =
-        '<div class="focus-toolbar-name">' + esc(focusMember?.name || 'Family') + '</div>' +
-        '<button class="btn btn-sm btn-outline" onclick="resetFocusTree()">Reset Focus</button>' +
-        '<button class="btn btn-sm btn-outline" onclick="treeZoomReset()">Recenter View</button>';
+        '<button class="focus-icon-btn" onclick="resetFocusTree()" title="Reset Focus" aria-label="Reset Focus">⌂</button>' +
+        '<button class="focus-icon-btn" onclick="treeZoomReset()" title="Recenter View" aria-label="Recenter View">⊕</button>';
     zc.appendChild(toolbar);
 
     const inner = document.createElement('div');
