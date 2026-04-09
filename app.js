@@ -1310,35 +1310,77 @@ function drawFocusedConnectors(svg, positions, edges) {
     }
 
     const childEdgeMap = new Map();
+    const parentEdgeMap = new Map();
+    const bandEdgeMap = new Map();
+
     edges.forEach(edge => {
         if (!childEdgeMap.has(edge.to)) childEdgeMap.set(edge.to, []);
         childEdgeMap.get(edge.to).push(edge);
+
+        if (!parentEdgeMap.has(edge.from)) parentEdgeMap.set(edge.from, []);
+        parentEdgeMap.get(edge.from).push(edge);
+
+        const from = positions.get(edge.from);
+        const to = positions.get(edge.to);
+        if (!from || !to) return;
+        const bandKey = from.node.generation + '>' + to.node.generation;
+        if (!bandEdgeMap.has(bandKey)) bandEdgeMap.set(bandKey, []);
+        bandEdgeMap.get(bandKey).push(edge);
+    });
+
+    const edgeRouteMap = new Map();
+    bandEdgeMap.forEach((bandEdges, bandKey) => {
+        const boxes = bandEdges.map(edge => ({
+            edge,
+            from: positions.get(edge.from),
+            to: positions.get(edge.to),
+        })).filter(item => item.from && item.to);
+        if (!boxes.length) return;
+
+        boxes.sort((a, b) => {
+            const aMid = (a.from.x + a.from.width / 2 + a.to.x + a.to.width / 2) / 2;
+            const bMid = (b.from.x + b.from.width / 2 + b.to.x + b.to.width / 2) / 2;
+            return aMid - bMid;
+        });
+
+        const bandTop = Math.max(...boxes.map(item => item.from.y + item.from.height)) + 14;
+        const bandBottom = Math.min(...boxes.map(item => item.to.y)) - 14;
+        const available = Math.max(18, bandBottom - bandTop);
+        const step = boxes.length > 1 ? available / (boxes.length + 1) : available / 2;
+
+        boxes.forEach((item, index) => {
+            const laneY = boxes.length > 1 ? bandTop + step * (index + 1) : bandTop + step;
+            edgeRouteMap.set(item.edge.from + '>' + item.edge.to, laneY);
+        });
     });
 
     edges.forEach(edge => {
         const from = positions.get(edge.from);
         const to = positions.get(edge.to);
         if (!from || !to) return;
-        const siblingEdges = (childEdgeMap.get(edge.to) || []).slice().sort((a, b) => {
+        const outgoingEdges = (parentEdgeMap.get(edge.from) || []).slice().sort((a, b) => {
+            const aTo = positions.get(a.to);
+            const bTo = positions.get(b.to);
+            return (aTo.x + aTo.width / 2) - (bTo.x + bTo.width / 2);
+        });
+        const incomingEdges = (childEdgeMap.get(edge.to) || []).slice().sort((a, b) => {
             const aFrom = positions.get(a.from);
             const bFrom = positions.get(b.from);
             return (aFrom.x + aFrom.width / 2) - (bFrom.x + bFrom.width / 2);
         });
-        const siblingCount = siblingEdges.length;
-        const siblingIndex = Math.max(0, siblingEdges.findIndex(candidate => candidate.from === edge.from && candidate.to === edge.to));
-        const laneSpread = Math.min(54, Math.max(18, to.width * 0.12));
-        let endOffset = 0;
-        if (siblingCount > 1) {
-            const mid = (siblingCount - 1) / 2;
-            endOffset = (siblingIndex - mid) * laneSpread;
-        }
 
-        const start = { x: from.x + from.width / 2, y: from.y + from.height };
-        const end = {
-            x: to.x + to.width / 2 + endOffset,
-            y: to.y,
-        };
-        const highwayY = start.y + (end.y - start.y) / 2;
+        const outgoingIndex = Math.max(0, outgoingEdges.findIndex(candidate => candidate.from === edge.from && candidate.to === edge.to));
+        const incomingIndex = Math.max(0, incomingEdges.findIndex(candidate => candidate.from === edge.from && candidate.to === edge.to));
+
+        const sourceSpread = Math.min(62, Math.max(18, from.width * 0.16));
+        const targetSpread = Math.min(62, Math.max(18, to.width * 0.16));
+        const sourceMid = (outgoingEdges.length - 1) / 2;
+        const targetMid = (incomingEdges.length - 1) / 2;
+        const startX = from.x + from.width / 2 + (outgoingEdges.length > 1 ? (outgoingIndex - sourceMid) * sourceSpread : 0);
+        const endX = to.x + to.width / 2 + (incomingEdges.length > 1 ? (incomingIndex - targetMid) * targetSpread : 0);
+        const start = { x: startX, y: from.y + from.height };
+        const end = { x: endX, y: to.y };
+        const highwayY = edgeRouteMap.get(edge.from + '>' + edge.to) || (start.y + (end.y - start.y) / 2);
         addPath([
             start,
             { x: start.x, y: highwayY },
