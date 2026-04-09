@@ -53,6 +53,15 @@ const pText = p => p?.rich_text?.map(t => t.plain_text).join('') || '';
 const pDate = p => p?.date?.start || null;
 const pSelect = p => p?.select?.name || null;
 const pRel = p => (p?.relation || []).map(r => r.id);
+const pNum = p => typeof p?.number === 'number' ? p.number : null;
+const pFormula = p => {
+    const formula = p?.formula;
+    if (!formula) return null;
+    if (formula.type === 'string') return formula.string || '';
+    if (formula.type === 'number') return formula.number != null ? String(formula.number) : null;
+    if (formula.type === 'boolean') return formula.boolean ? 'true' : 'false';
+    return null;
+};
 const pFile = p => {
     if (!p?.files?.length) return null;
     const f = p.files[0];
@@ -68,6 +77,9 @@ function parseMember(pg) {
         photo: pFile(p['Photo']),
         dob: pDate(p['Date of Birth']),
         dod: pDate(p['Date of Death']),
+        personNumber: pNum(p['PersonID']),
+        householdUnitId: pFormula(p['HouseholdUnitID']),
+        parentFamilyId: pFormula(p['ParentFamilyID']),
         spouseIds: pRel(p['Spouse']),
         childrenIds: pRel(p['Children']),
         parentIds: pRel(p['Parents']),
@@ -234,14 +246,19 @@ function preferredSpouse(member, excludeId = null) {
 }
 
 function displayUnitForPerson(member) {
-    const people = [member].filter(Boolean);
-    const spouse = preferredSpouse(member);
-    if (spouse) people.push(spouse);
-    return people.sort(memberSort);
+    if (!member) return [];
+    const householdKey = householdKeyForMember(member);
+    return state.members
+        .filter(candidate => householdKeyForMember(candidate) === householdKey)
+        .sort(memberSort);
 }
 
 function keyFromIds(ids) {
     return ids.slice().sort().join('|');
+}
+
+function householdKeyForMember(member) {
+    return member?.householdUnitId || ('HU:' + member?.id);
 }
 
 // =============================================
@@ -756,14 +773,33 @@ function generationUnitEl(unit) {
 
 function buildFamilyIndex() {
     const memberMap = new Map(state.members.map(member => [member.id, member]));
-    const familyMap = new Map();
+    const householdMap = new Map();
+    state.members.forEach(member => {
+        const key = householdKeyForMember(member);
+        if (!householdMap.has(key)) householdMap.set(key, []);
+        householdMap.get(key).push(member);
+    });
 
+    const familyMap = new Map();
     state.members.forEach(child => {
         const parentIds = child.parentIds.filter(parentId => memberMap.has(parentId)).sort();
-        if (!parentIds.length) return;
-        const key = keyFromIds(parentIds);
-        if (!familyMap.has(key)) familyMap.set(key, { key, parentIds: parentIds.slice(), childIds: [] });
-        familyMap.get(key).childIds.push(child.id);
+        const familyKey = child.parentFamilyId || (parentIds.length ? keyFromIds(parentIds) : '');
+        if (!familyKey) return;
+        if (!familyMap.has(familyKey)) {
+            familyMap.set(familyKey, {
+                key: familyKey,
+                parentIds: parentIds.slice(),
+                parentHouseholdKeys: [...new Set(parentIds.map(parentId => householdKeyForMember(memberMap.get(parentId))))],
+                childIds: [],
+            });
+        }
+        const family = familyMap.get(familyKey);
+        family.childIds.push(child.id);
+        parentIds.forEach(parentId => {
+            if (!family.parentIds.includes(parentId)) family.parentIds.push(parentId);
+            const householdKey = householdKeyForMember(memberMap.get(parentId));
+            if (!family.parentHouseholdKeys.includes(householdKey)) family.parentHouseholdKeys.push(householdKey);
+        });
     });
 
     const families = [...familyMap.values()].map(family => {
@@ -773,7 +809,7 @@ function buildFamilyIndex() {
             const child = memberMap.get(childId);
             if (!child) return;
             const members = displayUnitForPerson(child);
-            const unitKey = keyFromIds(members.map(member => member.id));
+            const unitKey = householdKeyForMember(child);
             if (seenUnits.has(unitKey)) return;
             seenUnits.add(unitKey);
             childUnits.push({
@@ -784,7 +820,11 @@ function buildFamilyIndex() {
         });
         return {
             ...family,
-            parentMembers: family.parentIds.map(parentId => memberMap.get(parentId)).filter(Boolean).sort(memberSort),
+            parentUnits: family.parentHouseholdKeys.map(householdKey => ({
+                key: householdKey,
+                members: (householdMap.get(householdKey) || []).slice().sort(memberSort),
+                biologicalIds: family.parentIds.filter(parentId => householdKeyForMember(memberMap.get(parentId)) === householdKey),
+            })).filter(unit => unit.members.length),
             childIds: family.childIds.slice().sort((a, b) => memberSort(memberMap.get(a), memberMap.get(b))),
             childUnits,
         };
@@ -831,14 +871,12 @@ function relationTitle(type, depth, members) {
 function householdGroupForParent(parentId, family, index) {
     const parent = index.memberMap.get(parentId);
     if (!parent) return null;
-    const otherBiologicalIds = family.parentIds.filter(id => id !== parentId);
-    const spouse = parent.spouseIds
-        .map(id => index.memberMap.get(id))
-        .filter(Boolean)
-        .find(candidate => !otherBiologicalIds.includes(candidate.id)) || null;
-    const members = spouse ? [parent, spouse].sort(memberSort) : [parent];
+    const householdKey = householdKeyForMember(parent);
+    const members = state.members
+        .filter(candidate => householdKeyForMember(candidate) === householdKey)
+        .sort(memberSort);
     return {
-        key: keyFromIds(members.map(member => member.id)),
+        key: householdKey,
         members,
         biologicalIds: [parentId],
     };
@@ -848,49 +886,18 @@ function buildAncestorGroupsForChild(childId, index) {
     const family = index.familyByChild.get(childId);
     if (!family) return null;
     const groups = new Map();
-    const assignedParents = new Set();
     const siblingIds = family.childIds.filter(id => id !== childId);
 
-    family.parentIds.forEach(parentId => {
-        if (assignedParents.has(parentId)) return;
-        const parent = index.memberMap.get(parentId);
-        if (!parent) return;
-
-        const directSpouseIds = family.parentIds.filter(otherId =>
-            otherId !== parentId &&
-            !assignedParents.has(otherId) &&
-            parent.spouseIds.includes(otherId)
-        );
-
-        if (directSpouseIds.length) {
-            const biologicalIds = [parentId, ...directSpouseIds].sort();
-            biologicalIds.forEach(id => assignedParents.add(id));
-            const members = biologicalIds
-                .map(id => index.memberMap.get(id))
-                .filter(Boolean)
-                .sort(memberSort);
-            const key = keyFromIds(members.map(member => member.id));
-            groups.set(key, {
-                key,
-                members,
-                biologicalIds,
-                siblingIds,
-            });
-            return;
-        }
-
-        assignedParents.add(parentId);
-        const group = householdGroupForParent(parentId, family, index);
-        if (!group) return;
-        if (!groups.has(group.key)) {
-            groups.set(group.key, {
-                key: group.key,
-                members: group.members,
+    (family.parentUnits || []).forEach(unit => {
+        if (!groups.has(unit.key)) {
+            groups.set(unit.key, {
+                key: unit.key,
+                members: unit.members,
                 biologicalIds: [],
                 siblingIds,
             });
         }
-        groups.get(group.key).biologicalIds.push(...group.biologicalIds);
+        groups.get(unit.key).biologicalIds.push(...unit.biologicalIds);
     });
     return [...groups.values()];
 }
