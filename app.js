@@ -1026,6 +1026,122 @@ function buildFocusedTreeModel() {
     return { root, ancestorRoots, descendantRoots, focusedId };
 }
 
+function buildFocusedGraphModel() {
+    const focusedId = ensureFocusedId();
+    const index = buildFamilyIndex();
+    const focus = index.memberMap.get(focusedId);
+    if (!focus) return null;
+
+    const focusKey = householdKeyForMember(focus);
+    const familyRecords = [...index.familiesByParentKey.values()];
+    const unitSource = new Map();
+    const outgoing = new Map();
+    const incoming = new Map();
+    const edgeSet = new Set();
+
+    function ensureUnit(key, members) {
+        if (!unitSource.has(key)) unitSource.set(key, { key, members: members.slice().sort(memberSort) });
+    }
+
+    function addEdge(from, to) {
+        if (!from || !to || from === to) return;
+        const edgeKey = from + '>' + to;
+        if (edgeSet.has(edgeKey)) return;
+        edgeSet.add(edgeKey);
+        if (!outgoing.has(from)) outgoing.set(from, []);
+        if (!incoming.has(to)) incoming.set(to, []);
+        outgoing.get(from).push(to);
+        incoming.get(to).push(from);
+    }
+
+    state.members.forEach(member => {
+        ensureUnit(householdKeyForMember(member), displayUnitForPerson(member));
+    });
+
+    familyRecords.forEach(family => {
+        family.parentUnits.forEach(unit => ensureUnit(unit.key, unit.members));
+        family.childUnits.forEach(unit => ensureUnit(unit.unitKey, unit.members));
+        family.parentUnits.forEach(parentUnit => {
+            family.childUnits.forEach(childUnit => {
+                addEdge(parentUnit.key, childUnit.unitKey);
+            });
+        });
+    });
+
+    const generation = new Map([[focusKey, 0]]);
+    const queue = [focusKey];
+
+    while (queue.length) {
+        const current = queue.shift();
+        const currentGeneration = generation.get(current);
+
+        (outgoing.get(current) || []).forEach(next => {
+            if (generation.has(next)) return;
+            generation.set(next, currentGeneration + 1);
+            queue.push(next);
+        });
+
+        (incoming.get(current) || []).forEach(prev => {
+            if (generation.has(prev)) return;
+            generation.set(prev, currentGeneration - 1);
+            queue.push(prev);
+        });
+    }
+
+    const unitNodes = new Map();
+    [...generation.entries()].forEach(([unitKey, level]) => {
+        const source = unitSource.get(unitKey);
+        const members = source?.members || [];
+        const childNodeIds = (outgoing.get(unitKey) || []).filter(next => generation.get(next) === level + 1);
+        const parentNodeIds = (incoming.get(unitKey) || []).filter(prev => generation.get(prev) === level - 1);
+        const isFocus = unitKey === focusKey;
+
+        let title;
+        if (isFocus) title = relationTitle('root', 0, members);
+        else if (level < 0) title = relationTitle('ancestor', Math.abs(level), members);
+        else if (level === 0) title = members.length > 1 ? 'Sibling Family' : 'Sibling';
+        else title = relationTitle('descendant', level, members);
+
+        const directChildCount = childNodeIds.length;
+        unitNodes.set(unitKey, {
+            id: unitKey,
+            key: unitKey,
+            type: isFocus ? 'root' : (level < 0 ? 'ancestor' : 'descendant'),
+            generation: level,
+            depth: Math.abs(level),
+            title,
+            members,
+            bundle: { visible: [], overflow: 0 },
+            meta: directChildCount ? directChildCount + (directChildCount === 1 ? ' child' : ' children') : '',
+            parentNodeIds,
+            childNodeIds,
+            sortKey: members.map(member => (member.dob || '9999-12-31') + '|' + member.name).join('||'),
+            lane: 0,
+        });
+    });
+
+    const rowsMap = new Map();
+    [...unitNodes.values()].forEach(node => {
+        if (!rowsMap.has(node.generation)) rowsMap.set(node.generation, []);
+        rowsMap.get(node.generation).push(node);
+    });
+
+    const rows = [...rowsMap.keys()].sort((a, b) => a - b).map(generationKey => ({
+        rowIndex: generationKey,
+        kind: 'units',
+        nodes: rowsMap.get(generationKey).slice().sort((a, b) => a.sortKey.localeCompare(b.sortKey)),
+    }));
+
+    const edges = [];
+    unitNodes.forEach(node => {
+        node.childNodeIds.forEach(childId => {
+            if (unitNodes.has(childId)) edges.push({ from: node.id, to: childId });
+        });
+    });
+
+    return { rows, edges, focusKey, unitNodes };
+}
+
 function maxDepth(nodes) {
     if (!nodes.length) return 0;
     return Math.max(...nodes.map(node => Math.max(node.depth, maxDepth(node.children))));
@@ -1241,28 +1357,14 @@ function renderTree() {
         return;
     }
 
-    const model = buildFocusedTreeModel();
+    const model = buildFocusedGraphModel();
     if (!model) return;
 
-    const sizeOf = node => ({
-        width: node.type === 'root' ? 360 : 280,
-        height: estimatePlatformHeight(node),
-    });
-    const branchGap = 56;
-    const forestGap = 76;
-    const rowGap = 74;
     const sidePad = 80;
     const topPad = 48;
     const bottomPad = 80;
-    const ancestorDepth = maxDepth(model.ancestorRoots);
-    const descendantDepth = maxDepth(model.descendantRoots);
-    const ancestorHeights = collectDepthHeights(model.ancestorRoots, sizeOf);
-    const descendantHeights = collectDepthHeights(model.descendantRoots, sizeOf);
-    const rootHeight = sizeOf(model.root).height;
-    const ancestorTotalHeight = Array.from({ length: ancestorDepth }, (_, idx) => {
-        const depth = ancestorDepth - idx;
-        return (ancestorHeights.get(depth) || 0) + rowGap;
-    }).reduce((sum, value) => sum + value, 0);
+    const rowGap = 92;
+    const unitGap = 40;
 
     const zc = document.createElement('div');
     zc.className = 'zoom-controls';
@@ -1288,86 +1390,81 @@ function renderTree() {
     svg.classList.add('tree-lines');
     tree.appendChild(svg);
 
-    const rootWidth = sizeOf(model.root).width;
-    const ancestorWidth = forestWidth(model.ancestorRoots, sizeOf, branchGap, forestGap);
-    const descendantWidth = forestWidth(model.descendantRoots, sizeOf, branchGap, forestGap);
-    const treeWidth = Math.max(rootWidth, ancestorWidth, descendantWidth) + sidePad * 2;
-    const rootCenterX = treeWidth / 2;
-    const rootY = topPad + ancestorTotalHeight;
-    const positions = new Map();
-    const edges = [];
+    model.rows = optimizeRowOrder(model);
 
-    function ancestorY(depth) {
-        let y = rootY;
-        for (let level = 1; level <= depth; level++) {
-            y -= rowGap + (ancestorHeights.get(level) || 0);
-        }
-        return y;
+    const nodeEls = new Map();
+    model.rows.forEach(row => {
+        row.nodes.forEach(node => {
+            const el = createPlatformEl(node);
+            el.style.position = 'absolute';
+            el.style.left = '0px';
+            el.style.top = '0px';
+            el.style.visibility = 'hidden';
+            tree.appendChild(el);
+            nodeEls.set(node.id, el);
+        });
+    });
+
+    inner.appendChild(tree);
+    c.appendChild(inner);
+
+    const metrics = new Map();
+    model.rows.forEach(row => {
+        row.nodes.forEach(node => {
+            const el = nodeEls.get(node.id);
+            metrics.set(node.id, {
+                width: el.offsetWidth || (node.type === 'root' ? 360 : 280),
+                height: el.offsetHeight || estimatePlatformHeight(node),
+                anchorOffset: (el.offsetWidth || (node.type === 'root' ? 360 : 280)) / 2,
+            });
+        });
+    });
+
+    const rowY = new Map();
+    let cursorY = topPad;
+    model.rows.forEach(row => {
+        const maxHeight = Math.max(...row.nodes.map(node => metrics.get(node.id)?.height || 0), 0);
+        rowY.set(row.rowIndex, cursorY);
+        cursorY += maxHeight + rowGap;
+    });
+
+    const placed = computeNodePlacements(model.rows, metrics, rowY, sidePad, unitGap);
+    const focusBox = placed.get(model.focusKey);
+    if (focusBox) {
+        const minX = Math.min(...[...placed.values()].map(box => box.x));
+        const maxX = Math.max(...[...placed.values()].map(box => box.x + box.width));
+        const focusCenter = focusBox.x + focusBox.width / 2;
+        const desiredHalf = Math.max(focusCenter - minX, maxX - focusCenter) + sidePad;
+        const shift = desiredHalf - focusCenter;
+        [...placed.entries()].forEach(([nodeId, box]) => {
+            placed.set(nodeId, { ...box, x: box.x + shift });
+        });
     }
 
-    function descendantY(depth) {
-        let y = rootY + rootHeight;
-        for (let level = 1; level <= depth; level++) {
-            y += rowGap;
-            if (level < depth) y += descendantHeights.get(level) || 0;
-        }
-        return y;
-    }
-
-    const rootSize = sizeOf(model.root);
-    positions.set(model.root.id, {
-        x: rootCenterX - rootSize.width / 2,
-        y: rootY,
-        width: rootSize.width,
-        height: rootSize.height,
-        node: model.root,
-    });
-
-    const ancestorStart = rootCenterX - ancestorWidth / 2;
-    let ancestorCursor = ancestorStart;
-    model.ancestorRoots.forEach(root => {
-        const width = root._subtreeWidth || subtreeWidth(root, sizeOf, branchGap);
-        const centerX = ancestorCursor + width / 2;
-        collectPositions(root, positions, edges, sizeOf, centerX, ancestorY(root.depth), ancestorY, -1);
-        edges.push({ from: root.id, to: model.root.id });
-        ancestorCursor += width + forestGap;
-    });
-
-    const descendantStart = rootCenterX - descendantWidth / 2;
-    let descendantCursor = descendantStart;
-    model.descendantRoots.forEach(root => {
-        const width = root._subtreeWidth || subtreeWidth(root, sizeOf, branchGap);
-        const centerX = descendantCursor + width / 2;
-        collectPositions(root, positions, edges, sizeOf, centerX, descendantY(root.depth), descendantY, 1);
-        edges.push({ from: model.root.id, to: root.id });
-        descendantCursor += width + forestGap;
-    });
-
-    const descendantTotalHeight = Array.from({ length: descendantDepth }, (_, idx) => {
-        const depth = idx + 1;
-        return rowGap + (descendantHeights.get(depth) || 0);
-    }).reduce((sum, value) => sum + value, 0);
-    const treeHeight = rootY + rootHeight + descendantTotalHeight + bottomPad;
+    const allBoxes = [...placed.values()];
+    const treeWidth = Math.max(...allBoxes.map(box => box.x + box.width), 0) + sidePad;
+    const treeHeight = Math.max(...allBoxes.map(box => box.y + box.height), 0) + bottomPad;
     tree.style.width = treeWidth + 'px';
     tree.style.height = treeHeight + 'px';
 
-    [...positions.values()].forEach(box => {
-        const el = createPlatformEl(box.node);
-        el.style.position = 'absolute';
-        el.style.left = box.x + 'px';
-        el.style.top = box.y + 'px';
-        el.style.width = box.width + 'px';
-        el.style.minHeight = box.height + 'px';
-        tree.appendChild(el);
+    model.rows.forEach(row => {
+        row.nodes.forEach(node => {
+            const el = nodeEls.get(node.id);
+            const box = placed.get(node.id);
+            if (!el || !box) return;
+            el.style.left = box.x + 'px';
+            el.style.top = box.y + 'px';
+            el.style.width = box.width + 'px';
+            el.style.minHeight = box.height + 'px';
+            el.style.visibility = 'visible';
+        });
     });
 
     svg.setAttribute('viewBox', '0 0 ' + treeWidth + ' ' + treeHeight);
     svg.setAttribute('width', treeWidth);
     svg.setAttribute('height', treeHeight);
-    drawFocusedConnectors(svg, positions, edges);
+    drawFocusedConnectors(svg, placed, model.edges);
 
-    inner.appendChild(tree);
-    c.appendChild(inner);
     initZoomPan(c, inner);
 }
 
