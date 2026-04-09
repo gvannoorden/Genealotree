@@ -848,7 +848,38 @@ function buildAncestorGroupsForChild(childId, index) {
     const family = index.familyByChild.get(childId);
     if (!family) return null;
     const groups = new Map();
+    const assignedParents = new Set();
+    const siblingIds = family.childIds.filter(id => id !== childId);
+
     family.parentIds.forEach(parentId => {
+        if (assignedParents.has(parentId)) return;
+        const parent = index.memberMap.get(parentId);
+        if (!parent) return;
+
+        const directSpouseIds = family.parentIds.filter(otherId =>
+            otherId !== parentId &&
+            !assignedParents.has(otherId) &&
+            parent.spouseIds.includes(otherId)
+        );
+
+        if (directSpouseIds.length) {
+            const biologicalIds = [parentId, ...directSpouseIds].sort();
+            biologicalIds.forEach(id => assignedParents.add(id));
+            const members = biologicalIds
+                .map(id => index.memberMap.get(id))
+                .filter(Boolean)
+                .sort(memberSort);
+            const key = keyFromIds(members.map(member => member.id));
+            groups.set(key, {
+                key,
+                members,
+                biologicalIds,
+                siblingIds,
+            });
+            return;
+        }
+
+        assignedParents.add(parentId);
         const group = householdGroupForParent(parentId, family, index);
         if (!group) return;
         if (!groups.has(group.key)) {
@@ -856,7 +887,7 @@ function buildAncestorGroupsForChild(childId, index) {
                 key: group.key,
                 members: group.members,
                 biologicalIds: [],
-                siblingIds: family.childIds.filter(id => id !== childId),
+                siblingIds,
             });
         }
         groups.get(group.key).biologicalIds.push(...group.biologicalIds);
