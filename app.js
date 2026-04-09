@@ -704,6 +704,7 @@ function computeNodePlacements(rows, metrics, rowY, sidePad, unitGap) {
                 y: rowY.get(row.rowIndex),
                 width,
                 height: metric.height || 0,
+                node,
             });
             cursor += width + unitGap;
         });
