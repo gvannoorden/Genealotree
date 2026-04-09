@@ -1176,12 +1176,35 @@ function drawFocusedConnectors(svg, positions, edges) {
         svg.appendChild(path);
     }
 
+    const childEdgeMap = new Map();
+    edges.forEach(edge => {
+        if (!childEdgeMap.has(edge.to)) childEdgeMap.set(edge.to, []);
+        childEdgeMap.get(edge.to).push(edge);
+    });
+
     edges.forEach(edge => {
         const from = positions.get(edge.from);
         const to = positions.get(edge.to);
         if (!from || !to) return;
+        const siblingEdges = (childEdgeMap.get(edge.to) || []).slice().sort((a, b) => {
+            const aFrom = positions.get(a.from);
+            const bFrom = positions.get(b.from);
+            return (aFrom.x + aFrom.width / 2) - (bFrom.x + bFrom.width / 2);
+        });
+        const siblingCount = siblingEdges.length;
+        const siblingIndex = Math.max(0, siblingEdges.findIndex(candidate => candidate.from === edge.from && candidate.to === edge.to));
+        const laneSpread = Math.min(54, Math.max(18, to.width * 0.12));
+        let endOffset = 0;
+        if (siblingCount > 1) {
+            const mid = (siblingCount - 1) / 2;
+            endOffset = (siblingIndex - mid) * laneSpread;
+        }
+
         const start = { x: from.x + from.width / 2, y: from.y + from.height };
-        const end = { x: to.x + to.width / 2, y: to.y };
+        const end = {
+            x: to.x + to.width / 2 + endOffset,
+            y: to.y,
+        };
         const highwayY = start.y + (end.y - start.y) / 2;
         addPath([
             start,
