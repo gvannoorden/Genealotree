@@ -54,6 +54,7 @@ const pDate = p => p?.date?.start || null;
 const pSelect = p => p?.select?.name || null;
 const pRel = p => (p?.relation || []).map(r => r.id);
 const pNum = p => typeof p?.number === 'number' ? p.number : null;
+const pUniqueId = p => typeof p?.unique_id?.number === 'number' ? p.unique_id.number : null;
 const pFormula = p => {
     const formula = p?.formula;
     if (!formula) return null;
@@ -67,24 +68,30 @@ const pFile = p => {
     const f = p.files[0];
     return f.type === 'file' ? f.file.url : f.type === 'external' ? f.external.url : null;
 };
+const prop = (props, ...keys) => {
+    for (const key of keys) {
+        if (props[key] != null) return props[key];
+    }
+    return null;
+};
 
 function parseMember(pg) {
     const p = pg.properties;
     return {
         id: pg.id,
-        name: pTitle(p['Name']),
-        middleName: pText(p['Middle Name']),
-        photo: pFile(p['Photo']),
-        dob: pDate(p['Date of Birth']),
-        dod: pDate(p['Date of Death']),
-        personNumber: pNum(p['PersonID']),
-        householdUnitId: pFormula(p['HouseholdUnitID']),
-        parentFamilyId: pFormula(p['ParentFamilyID']),
-        spouseIds: pRel(p['Spouse']),
-        childrenIds: pRel(p['Children']),
-        parentIds: pRel(p['Parents']),
-        eventIds: pRel(p['Events']),
-        storyIds: pRel(p['Stories']),
+        name: pTitle(prop(p, 'Name', 'title')),
+        middleName: pText(prop(p, 'Middle Name')),
+        photo: pFile(prop(p, 'Photo')),
+        dob: pDate(prop(p, 'Date of Birth')),
+        dod: pDate(prop(p, 'Date of Death')),
+        personNumber: pUniqueId(prop(p, 'PersonID', 'kUWw')),
+        householdUnitId: pFormula(prop(p, 'HouseholdUnitID', '%3EX%3F%3C')),
+        parentFamilyId: pFormula(prop(p, 'ParentFamilyID', '%7Dggm')),
+        spouseIds: pRel(prop(p, 'Spouse')),
+        childrenIds: pRel(prop(p, 'Children')),
+        parentIds: pRel(prop(p, 'Parents', 'Parent')),
+        eventIds: pRel(prop(p, 'Events')),
+        storyIds: pRel(prop(p, 'Stories')),
     };
 }
 
