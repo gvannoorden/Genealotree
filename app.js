@@ -936,16 +936,13 @@ function buildDescendantBranch(unit, sourceFamily, index, depth = 1, visited = n
     const nextVisited = new Set(visited);
     nextVisited.add(unitKey);
 
-    const siblingIds = sourceFamily.childUnits
-        .filter(childUnit => childUnit.unitKey !== unit.unitKey)
-        .map(childUnit => childUnit.primaryId);
     const node = {
         id: 'descendant:' + unitKey,
         type: 'descendant',
         depth,
         title: relationTitle('descendant', depth, unit.members),
         members: unit.members,
-        bundle: bundlePeople(siblingIds, index.memberMap),
+        bundle: { visible: [], overflow: 0 },
         children: [],
         meta: '',
     };
