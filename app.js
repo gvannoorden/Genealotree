@@ -643,42 +643,53 @@ function optimizeRowOrder(layout) {
 
 function placeRowUnits(units, metrics, desiredCenters, sidePad, unitGap) {
     const placements = new Map();
-    let cursor = sidePad;
-    const finiteDesired = [];
-    const laneGap = 180;
+    const zoneGap = 180;
+    const groups = [
+        units.filter(unit => (unit.lane || 0) < 0),
+        units.filter(unit => (unit.lane || 0) === 0),
+        units.filter(unit => (unit.lane || 0) > 0),
+    ];
 
-    units.forEach(unit => {
-        const metric = metrics.get(unit.id) || { width: 0, anchorOffset: 0 };
-        const width = metric.width || 0;
-        const anchorOffset = Number.isFinite(metric.anchorOffset) ? metric.anchorOffset : width / 2;
-        const desired = desiredCenters.get(unit.id);
-        let left = cursor;
-        if (placements.size) {
-            const prevUnit = units[placements.size - 1];
-            if ((prevUnit.lane || 0) !== (unit.lane || 0)) left += laneGap;
-        }
-        if (Number.isFinite(desired)) left = Math.max(left, desired - anchorOffset);
-        placements.set(unit.id, { left, width, anchorOffset });
-        cursor = left + width + unitGap;
-        if (Number.isFinite(desired)) finiteDesired.push({ unitId: unit.id, desired });
-    });
+    function placeGroup(groupUnits, startCursor) {
+        let cursor = startCursor;
+        const entries = [];
+        groupUnits.forEach(unit => {
+            const metric = metrics.get(unit.id) || { width: 0, anchorOffset: 0 };
+            const width = metric.width || 0;
+            const anchorOffset = Number.isFinite(metric.anchorOffset) ? metric.anchorOffset : width / 2;
+            const desired = desiredCenters.get(unit.id);
+            let left = cursor;
+            if (Number.isFinite(desired)) left = Math.max(left, desired - anchorOffset);
+            entries.push({ unit, left, width, anchorOffset, desired });
+            cursor = left + width + unitGap;
+        });
 
-    if (finiteDesired.length) {
-        const currentAvg = finiteDesired.reduce((sum, entry) => {
-            const box = placements.get(entry.unitId);
-            return sum + box.left + box.anchorOffset;
-        }, 0) / finiteDesired.length;
-        const desiredAvg = finiteDesired.reduce((sum, entry) => sum + entry.desired, 0) / finiteDesired.length;
-        let shift = desiredAvg - currentAvg;
-        const minLeft = Math.min(...units.map(unit => placements.get(unit.id)?.left || 0));
-        if (minLeft + shift < sidePad) shift += sidePad - (minLeft + shift);
-        if (shift) {
-            units.forEach(unit => {
-                const box = placements.get(unit.id);
-                placements.set(unit.id, { ...box, left: box.left + shift });
-            });
+        const finiteDesired = entries.filter(entry => Number.isFinite(entry.desired));
+        if (finiteDesired.length) {
+            const currentAvg = finiteDesired.reduce((sum, entry) => sum + entry.left + entry.anchorOffset, 0) / finiteDesired.length;
+            const desiredAvg = finiteDesired.reduce((sum, entry) => sum + entry.desired, 0) / finiteDesired.length;
+            let shift = desiredAvg - currentAvg;
+            const minLeft = Math.min(...entries.map(entry => entry.left), startCursor);
+            if (minLeft + shift < startCursor) shift += startCursor - (minLeft + shift);
+            if (shift) {
+                entries.forEach(entry => {
+                    entry.left += shift;
+                });
+            }
         }
+
+        entries.forEach(entry => {
+            placements.set(entry.unit.id, { left: entry.left, width: entry.width, anchorOffset: entry.anchorOffset });
+        });
+        return entries.length ? Math.max(...entries.map(entry => entry.left + entry.width)) : startCursor;
     }
+
+    let cursor = sidePad;
+    groups.forEach((groupUnits, groupIndex) => {
+        if (!groupUnits.length) return;
+        if (placements.size) cursor += zoneGap;
+        cursor = placeGroup(groupUnits, cursor);
+    });
 
     return placements;
 }
@@ -840,11 +851,16 @@ function buildFamilyIndex() {
 
     const familyByChild = new Map();
     const familiesByParentId = new Map();
+    const familiesByChildUnitKey = new Map();
     families.forEach(family => {
         family.childIds.forEach(childId => familyByChild.set(childId, family));
         family.parentIds.forEach(parentId => {
             if (!familiesByParentId.has(parentId)) familiesByParentId.set(parentId, []);
             familiesByParentId.get(parentId).push(family);
+        });
+        family.childUnits.forEach(childUnit => {
+            if (!familiesByChildUnitKey.has(childUnit.unitKey)) familiesByChildUnitKey.set(childUnit.unitKey, []);
+            familiesByChildUnitKey.get(childUnit.unitKey).push(family);
         });
     });
 
@@ -853,12 +869,17 @@ function buildFamilyIndex() {
         householdMap,
         familyByChild,
         familiesByParentId,
+        familiesByChildUnitKey,
         familiesByParentKey: new Map(families.map(family => [family.key, family])),
     };
 }
 
-function assignUnitSide(sideMap, unitKey, side, focusKey) {
+function assignUnitSide(sideMap, unitKey, side, focusKey, force = false) {
     if (!unitKey || !side || unitKey === focusKey) return;
+    if (force) {
+        sideMap.set(unitKey, side);
+        return;
+    }
     if (!sideMap.has(unitKey)) {
         sideMap.set(unitKey, side);
         return;
@@ -867,54 +888,151 @@ function assignUnitSide(sideMap, unitKey, side, focusKey) {
     if (existing !== side) sideMap.set(unitKey, 0);
 }
 
-function collectDescendantUnitsFromHousehold(unitKey, side, index, focusKey, sideMap, visited = new Set()) {
-    if (!unitKey || unitKey === focusKey || visited.has(unitKey)) return;
-    visited.add(unitKey);
-    assignUnitSide(sideMap, unitKey, side, focusKey);
+function laneFromSide(side) {
+    if (side === 'focus_left') return -1;
+    if (side === 'focus_right') return 1;
+    return 0;
+}
 
-    const members = (index.householdMap.get(unitKey) || []).slice();
-    members.forEach(member => {
-        (index.familiesByParentId.get(member.id) || []).forEach(family => {
-            family.childUnits.forEach(childUnit => {
-                collectDescendantUnitsFromHousehold(childUnit.unitKey, side, index, focusKey, sideMap, visited);
-            });
-        });
+function sortUnits(units) {
+    return units.slice().sort((a, b) => {
+        const aKey = (a.members || []).map(member => (member.dob || '9999-12-31') + '|' + (member.name || '')).join('||');
+        const bKey = (b.members || []).map(member => (member.dob || '9999-12-31') + '|' + (member.name || '')).join('||');
+        return aKey.localeCompare(bKey);
     });
 }
 
-function collectBranchUnitsForSeedPerson(personId, side, index, focusKey, sideMap, visitedPeople = new Set(), visitedFamilies = new Set()) {
-    if (!personId || visitedPeople.has(personId)) return;
-    visitedPeople.add(personId);
-
+function parentUnitsForPerson(personId, index) {
     const family = index.familyByChild.get(personId);
-    if (!family || visitedFamilies.has(family.key)) return;
-    visitedFamilies.add(family.key);
+    if (!family) return [];
+    return sortUnits(family.parentUnits || []);
+}
 
-    family.parentUnits.forEach(parentUnit => {
-        assignUnitSide(sideMap, parentUnit.key, side, focusKey);
+function childFamiliesForMembers(members, index) {
+    const families = new Map();
+    members.forEach(member => {
+        (index.familiesByParentId.get(member.id) || []).forEach(family => {
+            if (!families.has(family.key)) families.set(family.key, family);
+        });
     });
+    return [...families.values()];
+}
 
-    family.childUnits.forEach(childUnit => {
-        if (childUnit.unitKey === focusKey) return;
-        collectDescendantUnitsFromHousehold(childUnit.unitKey, side, index, focusKey, sideMap, new Set());
-    });
+function walkHouseholdBranch(unitKey, side, index, focusKey, sideMap, options = {}) {
+    const visitedUnits = options.visitedUnits || new Set();
+    const excludeChildUnitKeys = options.excludeChildUnitKeys || new Set();
+    const includeAncestors = options.includeAncestors !== false;
+    const includeDescendants = options.includeDescendants !== false;
+    const forceSide = options.forceSide === true;
+    const visitKey = side + ':' + unitKey + ':' + (includeAncestors ? '1' : '0') + ':' + (includeDescendants ? '1' : '0');
 
-    family.parentIds.forEach(parentId => {
-        collectBranchUnitsForSeedPerson(parentId, side, index, focusKey, sideMap, visitedPeople, visitedFamilies);
-    });
+    if (!unitKey || unitKey === focusKey || visitedUnits.has(visitKey)) return;
+    visitedUnits.add(visitKey);
+    assignUnitSide(sideMap, unitKey, side, focusKey, forceSide);
+
+    const members = (index.householdMap.get(unitKey) || []).slice();
+    if (includeAncestors) {
+        members.forEach(member => {
+            parentUnitsForPerson(member.id, index).forEach(parentUnit => {
+                if (parentUnit.key !== unitKey) {
+                    walkHouseholdBranch(parentUnit.key, side, index, focusKey, sideMap, {
+                        visitedUnits,
+                        excludeChildUnitKeys,
+                        includeAncestors: true,
+                        includeDescendants: true,
+                        forceSide,
+                    });
+                }
+            });
+        });
+    }
+
+    if (includeDescendants) {
+        members.forEach(member => {
+            (index.familiesByParentId.get(member.id) || []).forEach(family => {
+                family.childUnits.forEach(childUnit => {
+                    if (childUnit.unitKey === focusKey || excludeChildUnitKeys.has(childUnit.unitKey)) return;
+                    walkHouseholdBranch(childUnit.unitKey, side, index, focusKey, sideMap, {
+                        visitedUnits,
+                        excludeChildUnitKeys,
+                        includeAncestors: false,
+                        includeDescendants: true,
+                        forceSide,
+                    });
+                });
+            });
+        });
+    }
 }
 
 function applyFocusedBranchLanes(unitNodes, index, focusMember, focusHousehold, focusKey) {
     const sideMap = new Map();
-    const focusSiblings = focusHousehold.filter(member => member.id !== focusMember.id);
+    const partnerMembers = focusHousehold.filter(member => member.id !== focusMember.id);
+    const focusSide = 'focus_left';
+    const counterpartSide = 'focus_right';
 
-    collectBranchUnitsForSeedPerson(focusMember.id, -1, index, focusKey, sideMap);
-    focusSiblings.forEach(member => {
-        collectBranchUnitsForSeedPerson(member.id, 1, index, focusKey, sideMap);
+    parentUnitsForPerson(focusMember.id, index).forEach(parentUnit => {
+        walkHouseholdBranch(parentUnit.key, focusSide, index, focusKey, sideMap, {
+            visitedUnits: new Set(),
+            includeAncestors: true,
+            includeDescendants: true,
+        });
+    });
+
+    if (partnerMembers.length) {
+        partnerMembers.forEach(member => {
+            parentUnitsForPerson(member.id, index).forEach(parentUnit => {
+                walkHouseholdBranch(parentUnit.key, counterpartSide, index, focusKey, sideMap, {
+                    visitedUnits: new Set(),
+                    includeAncestors: true,
+                    includeDescendants: true,
+                });
+            });
+        });
+    } else {
+        const singleParentUnits = parentUnitsForPerson(focusMember.id, index);
+        if (singleParentUnits.length > 1) {
+            singleParentUnits.slice(1).forEach(parentUnit => {
+                walkHouseholdBranch(parentUnit.key, counterpartSide, index, focusKey, sideMap, {
+                    visitedUnits: new Set(),
+                    includeAncestors: true,
+                    includeDescendants: true,
+                });
+            });
+        }
+    }
+
+    childFamiliesForMembers(focusHousehold, index).forEach(family => {
+        sortUnits(family.childUnits || []).forEach(childUnit => {
+            if (!childUnit?.unitKey || childUnit.unitKey === focusKey) return;
+
+            walkHouseholdBranch(childUnit.unitKey, focusSide, index, focusKey, sideMap, {
+                visitedUnits: new Set(),
+                includeAncestors: false,
+                includeDescendants: true,
+            });
+
+            const counterpartFamilies = index.familiesByChildUnitKey.get(childUnit.unitKey) || [];
+            const counterpartUnits = counterpartFamilies
+                .flatMap(counterpartFamily => counterpartFamily.parentUnits || [])
+                .filter(parentUnit => parentUnit.key !== focusKey);
+
+            sortUnits(counterpartUnits).forEach(parentUnit => {
+                walkHouseholdBranch(parentUnit.key, counterpartSide, index, focusKey, sideMap, {
+                    visitedUnits: new Set(),
+                    excludeChildUnitKeys: new Set([childUnit.unitKey]),
+                    includeAncestors: true,
+                    includeDescendants: true,
+                    forceSide: true,
+                });
+            });
+        });
     });
 
     unitNodes.forEach(node => {
-        node.lane = node.key === focusKey ? 0 : (sideMap.get(node.key) || 0);
+        node.side = node.key === focusKey ? 'center' : (sideMap.get(node.key) || 'center');
+        node.zone = node.side === 'focus_left' ? 'left' : node.side === 'focus_right' ? 'right' : 'center';
+        node.lane = laneFromSide(node.side);
     });
 }
 
@@ -1208,7 +1326,17 @@ function buildFocusedGraphModel() {
     const edges = [];
     unitNodes.forEach(node => {
         node.childNodeIds.forEach(childId => {
-            if (unitNodes.has(childId)) edges.push({ from: node.id, to: childId });
+            if (!unitNodes.has(childId)) return;
+            const childNode = unitNodes.get(childId);
+            const edgeSide = node.side !== 'center' ? node.side : childNode.side !== 'center' ? childNode.side : 'center';
+            edges.push({
+                from: node.id,
+                to: childId,
+                side: edgeSide,
+                railKey: node.generation + '>' + childNode.generation + ':' + edgeSide,
+                exitPort: edgeSide === 'focus_right' ? 'bottom-right' : edgeSide === 'focus_left' ? 'bottom-left' : 'bottom-center',
+                entryPort: edgeSide === 'focus_right' ? 'top-right' : edgeSide === 'focus_left' ? 'top-left' : 'top-center',
+            });
         });
     });
 
@@ -1382,28 +1510,38 @@ function drawFocusedConnectors(svg, positions, edges) {
         svg.appendChild(path);
     }
 
-    const childEdgeMap = new Map();
-    const parentEdgeMap = new Map();
-    const bandEdgeMap = new Map();
+    function portPoint(box, portName) {
+        const horizontalInset = Math.min(72, Math.max(26, box.width * 0.22));
+        if (portName === 'top-left') return { x: box.x + horizontalInset, y: box.y };
+        if (portName === 'top-right') return { x: box.x + box.width - horizontalInset, y: box.y };
+        if (portName === 'bottom-left') return { x: box.x + horizontalInset, y: box.y + box.height };
+        if (portName === 'bottom-right') return { x: box.x + box.width - horizontalInset, y: box.y + box.height };
+        if (portName === 'top-center') return { x: box.x + box.width / 2, y: box.y };
+        return { x: box.x + box.width / 2, y: box.y + box.height };
+    }
+
+    const edgeExitMap = new Map();
+    const edgeEntryMap = new Map();
+    const railEdgeMap = new Map();
 
     edges.forEach(edge => {
-        if (!childEdgeMap.has(edge.to)) childEdgeMap.set(edge.to, []);
-        childEdgeMap.get(edge.to).push(edge);
+        if (!edgeExitMap.has(edge.from)) edgeExitMap.set(edge.from, []);
+        edgeExitMap.get(edge.from).push(edge);
 
-        if (!parentEdgeMap.has(edge.from)) parentEdgeMap.set(edge.from, []);
-        parentEdgeMap.get(edge.from).push(edge);
+        if (!edgeEntryMap.has(edge.to)) edgeEntryMap.set(edge.to, []);
+        edgeEntryMap.get(edge.to).push(edge);
 
         const from = positions.get(edge.from);
         const to = positions.get(edge.to);
         if (!from || !to) return;
-        const bandKey = from.node.generation + '>' + to.node.generation;
-        if (!bandEdgeMap.has(bandKey)) bandEdgeMap.set(bandKey, []);
-        bandEdgeMap.get(bandKey).push(edge);
+        const railKey = edge.railKey || (from.node.generation + '>' + to.node.generation + ':' + (edge.side || 'center'));
+        if (!railEdgeMap.has(railKey)) railEdgeMap.set(railKey, []);
+        railEdgeMap.get(railKey).push(edge);
     });
 
     const edgeRouteMap = new Map();
-    bandEdgeMap.forEach((bandEdges, bandKey) => {
-        const boxes = bandEdges.map(edge => ({
+    railEdgeMap.forEach((railEdges, railKey) => {
+        const boxes = railEdges.map(edge => ({
             edge,
             from: positions.get(edge.from),
             to: positions.get(edge.to),
@@ -1431,13 +1569,12 @@ function drawFocusedConnectors(svg, positions, edges) {
         const from = positions.get(edge.from);
         const to = positions.get(edge.to);
         if (!from || !to) return;
-        const edgeSide = Math.sign((from.node?.lane || 0) || (to.node?.lane || 0));
-        const outgoingEdges = (parentEdgeMap.get(edge.from) || []).slice().sort((a, b) => {
+        const outgoingEdges = (edgeExitMap.get(edge.from) || []).slice().sort((a, b) => {
             const aTo = positions.get(a.to);
             const bTo = positions.get(b.to);
             return (aTo.x + aTo.width / 2) - (bTo.x + bTo.width / 2);
         });
-        const incomingEdges = (childEdgeMap.get(edge.to) || []).slice().sort((a, b) => {
+        const incomingEdges = (edgeEntryMap.get(edge.to) || []).slice().sort((a, b) => {
             const aFrom = positions.get(a.from);
             const bFrom = positions.get(b.from);
             return (aFrom.x + aFrom.width / 2) - (bFrom.x + bFrom.width / 2);
@@ -1446,16 +1583,14 @@ function drawFocusedConnectors(svg, positions, edges) {
         const outgoingIndex = Math.max(0, outgoingEdges.findIndex(candidate => candidate.from === edge.from && candidate.to === edge.to));
         const incomingIndex = Math.max(0, incomingEdges.findIndex(candidate => candidate.from === edge.from && candidate.to === edge.to));
 
-        const sourceSpread = Math.min(62, Math.max(18, from.width * 0.16));
-        const targetSpread = Math.min(62, Math.max(18, to.width * 0.16));
+        const start = portPoint(from, edge.exitPort || 'bottom-center');
+        const end = portPoint(to, edge.entryPort || 'top-center');
+        const sourceSpread = Math.min(26, Math.max(10, from.width * 0.05));
+        const targetSpread = Math.min(26, Math.max(10, to.width * 0.05));
         const sourceMid = (outgoingEdges.length - 1) / 2;
         const targetMid = (incomingEdges.length - 1) / 2;
-        const sourceBias = edgeSide < 0 ? -sourceSpread * 0.8 : edgeSide > 0 ? sourceSpread * 0.8 : 0;
-        const targetBias = edgeSide < 0 ? -targetSpread * 0.8 : edgeSide > 0 ? targetSpread * 0.8 : 0;
-        const startX = from.x + from.width / 2 + sourceBias + (outgoingEdges.length > 1 ? (outgoingIndex - sourceMid) * sourceSpread * 0.45 : 0);
-        const endX = to.x + to.width / 2 + targetBias + (incomingEdges.length > 1 ? (incomingIndex - targetMid) * targetSpread * 0.45 : 0);
-        const start = { x: startX, y: from.y + from.height };
-        const end = { x: endX, y: to.y };
+        start.x += outgoingEdges.length > 1 ? (outgoingIndex - sourceMid) * sourceSpread : 0;
+        end.x += incomingEdges.length > 1 ? (incomingIndex - targetMid) * targetSpread : 0;
         const highwayY = edgeRouteMap.get(edge.from + '>' + edge.to) || (start.y + (end.y - start.y) / 2);
         addPath([
             start,
