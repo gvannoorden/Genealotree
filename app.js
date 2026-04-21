@@ -645,7 +645,7 @@ function placeRowUnits(units, metrics, desiredCenters, sidePad, unitGap) {
     const placements = new Map();
     let cursor = sidePad;
     const finiteDesired = [];
-    const laneGap = 120;
+    const laneGap = 180;
 
     units.forEach(unit => {
         const metric = metrics.get(unit.id) || { width: 0, anchorOffset: 0 };
@@ -850,10 +850,72 @@ function buildFamilyIndex() {
 
     return {
         memberMap,
+        householdMap,
         familyByChild,
         familiesByParentId,
         familiesByParentKey: new Map(families.map(family => [family.key, family])),
     };
+}
+
+function assignUnitSide(sideMap, unitKey, side, focusKey) {
+    if (!unitKey || !side || unitKey === focusKey) return;
+    if (!sideMap.has(unitKey)) {
+        sideMap.set(unitKey, side);
+        return;
+    }
+    const existing = sideMap.get(unitKey);
+    if (existing !== side) sideMap.set(unitKey, 0);
+}
+
+function collectDescendantUnitsFromHousehold(unitKey, side, index, focusKey, sideMap, visited = new Set()) {
+    if (!unitKey || unitKey === focusKey || visited.has(unitKey)) return;
+    visited.add(unitKey);
+    assignUnitSide(sideMap, unitKey, side, focusKey);
+
+    const members = (index.householdMap.get(unitKey) || []).slice();
+    members.forEach(member => {
+        (index.familiesByParentId.get(member.id) || []).forEach(family => {
+            family.childUnits.forEach(childUnit => {
+                collectDescendantUnitsFromHousehold(childUnit.unitKey, side, index, focusKey, sideMap, visited);
+            });
+        });
+    });
+}
+
+function collectBranchUnitsForSeedPerson(personId, side, index, focusKey, sideMap, visitedPeople = new Set(), visitedFamilies = new Set()) {
+    if (!personId || visitedPeople.has(personId)) return;
+    visitedPeople.add(personId);
+
+    const family = index.familyByChild.get(personId);
+    if (!family || visitedFamilies.has(family.key)) return;
+    visitedFamilies.add(family.key);
+
+    family.parentUnits.forEach(parentUnit => {
+        assignUnitSide(sideMap, parentUnit.key, side, focusKey);
+    });
+
+    family.childUnits.forEach(childUnit => {
+        if (childUnit.unitKey === focusKey) return;
+        collectDescendantUnitsFromHousehold(childUnit.unitKey, side, index, focusKey, sideMap, new Set());
+    });
+
+    family.parentIds.forEach(parentId => {
+        collectBranchUnitsForSeedPerson(parentId, side, index, focusKey, sideMap, visitedPeople, visitedFamilies);
+    });
+}
+
+function applyFocusedBranchLanes(unitNodes, index, focusMember, focusHousehold, focusKey) {
+    const sideMap = new Map();
+    const focusSiblings = focusHousehold.filter(member => member.id !== focusMember.id);
+
+    collectBranchUnitsForSeedPerson(focusMember.id, -1, index, focusKey, sideMap);
+    focusSiblings.forEach(member => {
+        collectBranchUnitsForSeedPerson(member.id, 1, index, focusKey, sideMap);
+    });
+
+    unitNodes.forEach(node => {
+        node.lane = node.key === focusKey ? 0 : (sideMap.get(node.key) || 0);
+    });
 }
 
 function bundlePeople(ids, memberMap, limit = 4) {
@@ -1041,6 +1103,7 @@ function buildFocusedGraphModel() {
     if (!focus) return null;
 
     const focusKey = householdKeyForMember(focus);
+    const focusHousehold = displayUnitForPerson(focus);
     const familyRecords = [...index.familiesByParentKey.values()];
     const unitSource = new Map();
     const outgoing = new Map();
@@ -1127,6 +1190,8 @@ function buildFocusedGraphModel() {
             lane: 0,
         });
     });
+
+    applyFocusedBranchLanes(unitNodes, index, focus, focusHousehold, focusKey);
 
     const rowsMap = new Map();
     [...unitNodes.values()].forEach(node => {
@@ -1366,6 +1431,7 @@ function drawFocusedConnectors(svg, positions, edges) {
         const from = positions.get(edge.from);
         const to = positions.get(edge.to);
         if (!from || !to) return;
+        const edgeSide = Math.sign((from.node?.lane || 0) || (to.node?.lane || 0));
         const outgoingEdges = (parentEdgeMap.get(edge.from) || []).slice().sort((a, b) => {
             const aTo = positions.get(a.to);
             const bTo = positions.get(b.to);
@@ -1384,8 +1450,10 @@ function drawFocusedConnectors(svg, positions, edges) {
         const targetSpread = Math.min(62, Math.max(18, to.width * 0.16));
         const sourceMid = (outgoingEdges.length - 1) / 2;
         const targetMid = (incomingEdges.length - 1) / 2;
-        const startX = from.x + from.width / 2 + (outgoingEdges.length > 1 ? (outgoingIndex - sourceMid) * sourceSpread : 0);
-        const endX = to.x + to.width / 2 + (incomingEdges.length > 1 ? (incomingIndex - targetMid) * targetSpread : 0);
+        const sourceBias = edgeSide < 0 ? -sourceSpread * 0.8 : edgeSide > 0 ? sourceSpread * 0.8 : 0;
+        const targetBias = edgeSide < 0 ? -targetSpread * 0.8 : edgeSide > 0 ? targetSpread * 0.8 : 0;
+        const startX = from.x + from.width / 2 + sourceBias + (outgoingEdges.length > 1 ? (outgoingIndex - sourceMid) * sourceSpread * 0.45 : 0);
+        const endX = to.x + to.width / 2 + targetBias + (incomingEdges.length > 1 ? (incomingIndex - targetMid) * targetSpread * 0.45 : 0);
         const start = { x: startX, y: from.y + from.height };
         const end = { x: endX, y: to.y };
         const highwayY = edgeRouteMap.get(edge.from + '>' + edge.to) || (start.y + (end.y - start.y) / 2);
